@@ -1,7 +1,15 @@
 # Installation
 
-Crosswind is a Python package, and it needs Terraform or OpenTofu on your
-`PATH` to do anything other than `crosswind demo`.
+Crosswind is a Python package distributed through
+[GitHub releases](https://github.com/jetonecloud/crosswind/releases) rather
+than PyPI. It needs Terraform or OpenTofu on your `PATH` to do anything other
+than `crosswind demo`.
+
+Python 3.11 or newer.
+
+Pick a tag and stay on it. There is no `latest` that moves under you, which
+is the point — for a tool that reads your state, knowing exactly what you are
+running is worth one extra token in the install command.
 
 ## pipx
 
@@ -9,20 +17,59 @@ The usual way. `pipx` keeps Crosswind and its dependencies in their own
 virtualenv rather than in your system Python.
 
 ```sh
-pipx install crosswind
+pipx install git+https://github.com/jetonecloud/crosswind@v0.1.0
 crosswind demo
+```
+
+To upgrade, install the new tag over the old one:
+
+```sh
+pipx install --force git+https://github.com/jetonecloud/crosswind@v0.2.0
 ```
 
 ## uv
 
 ```sh
-uv tool install crosswind
+uv tool install git+https://github.com/jetonecloud/crosswind@v0.1.0
 ```
 
 Or without installing anything permanently:
 
 ```sh
-uvx crosswind demo
+uvx --from git+https://github.com/jetonecloud/crosswind@v0.1.0 crosswind demo
+```
+
+## From the release wheel, without git
+
+For an image or a runner with no `git`. The wheel is attached to every
+release:
+
+```sh
+VERSION=0.1.0
+BASE=https://github.com/jetonecloud/crosswind/releases/download/v$VERSION
+
+curl -fsSLO "$BASE/crosswind-$VERSION-py3-none-any.whl"
+pipx install "./crosswind-$VERSION-py3-none-any.whl"
+```
+
+### Verifying what you downloaded
+
+Every release carries a `checksums.txt`. Worth the thirty seconds for a tool
+that reads your Terraform state:
+
+```sh
+gh release download v0.1.0 --repo jetonecloud/crosswind
+sha256sum --check --ignore-missing checksums.txt
+pipx install ./crosswind-0.1.0-py3-none-any.whl
+```
+
+Releases also carry a signed build provenance attestation, which is what
+proves the wheel was built by the release workflow from this repository
+rather than uploaded by hand:
+
+```sh
+gh attestation verify crosswind-0.1.0-py3-none-any.whl \
+  --repo jetonecloud/crosswind
 ```
 
 ## pip
@@ -32,11 +79,30 @@ system-wide `boto3` upgrade is a good way to break something else.
 
 ```sh
 python -m venv ~/.venvs/crosswind
-~/.venvs/crosswind/bin/pip install crosswind
+~/.venvs/crosswind/bin/pip install \
+  git+https://github.com/jetonecloud/crosswind@v0.1.0
 ~/.venvs/crosswind/bin/crosswind demo
 ```
 
-Python 3.11 or newer.
+## In a requirements file
+
+```
+crosswind @ git+https://github.com/jetonecloud/crosswind@v0.1.0
+```
+
+Pin the tag, not a branch. `@main` will silently change what your CI runs.
+
+## Why not PyPI
+
+Partly because a drift checker that reads your state is a thing you should be
+deliberate about installing, and a tag in the command is a cheap way to be
+deliberate. Partly because publishing to PyPI means claiming a name and
+taking on the obligation not to break anyone depending on it, which is a
+commitment worth making once the schema has stopped moving rather than at
+0.1.0.
+
+If that changes, the install command will get shorter and this section will
+say so.
 
 ## Docker
 

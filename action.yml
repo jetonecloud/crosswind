@@ -108,7 +108,11 @@ inputs:
     default: "14"
 
   crosswind-version:
-    description: Version to install from PyPI. Pin this for a reproducible job.
+    description: >
+      Release tag to install, without the leading "v" — e.g. "0.1.0". Leave
+      empty to install the same ref this action was referenced at, which is
+      usually what you want: it guarantees the action and the tool are the
+      same version.
     required: false
     default: ""
 
@@ -146,15 +150,36 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
+    # Crosswind is distributed through GitHub releases rather than PyPI, so
+    # this installs from the repository at a pinned ref.
+    #
+    # With no `crosswind-version`, it installs the ref this action was
+    # referenced at — `uses: jetonecloud/crosswind@v0.1.0` installs v0.1.0.
+    # That makes it impossible for the action and the tool to be different
+    # versions, which is a confusing failure to debug.
     - name: Install Crosswind
       shell: bash
+      env:
+        VERSION: ${{ inputs.crosswind-version }}
+        ACTION_REF: ${{ github.action_ref }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        if [ -n "${{ inputs.crosswind-version }}" ]; then
-          python -m pip install --quiet "crosswind==${{ inputs.crosswind-version }}"
+        repo="git+https://github.com/jetonecloud/crosswind"
+
+        if [ -n "$VERSION" ]; then
+          target="${repo}@v${VERSION#v}"
+        elif [ -n "$ACTION_REF" ]; then
+          target="${repo}@${ACTION_REF}"
         else
-          python -m pip install --quiet crosswind
+          # `uses: ./` — a local checkout, which is how this repo's own CI
+          # exercises the action. There is no ref to pin to, so install the
+          # checkout itself.
+          target="$ACTION_PATH"
         fi
+
+        echo "Installing from: $target"
+        python -m pip install --quiet "$target"
         crosswind version
 
     # OIDC. No static credentials: the role is assumed from the job's own

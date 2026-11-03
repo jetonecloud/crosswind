@@ -12,14 +12,18 @@ tree.
 
 ## Getting started
 
+Installed from the GitHub release — Crosswind is not on PyPI, deliberately,
+so the version you get is the one you named:
+
 ```sh
-pipx install crosswind
+pipx install git+https://github.com/jetonecloud/crosswind@v0.1.0
 crosswind demo     # see what a report looks like, no account needed
 ```
 
-`uv tool install crosswind` and Docker work too — see
-[`docs/installation.md`](docs/installation.md). You need Terraform or OpenTofu
-on your `PATH`; Crosswind drives whichever it finds and `--binary` picks one.
+`uv`, a plain virtualenv, the release wheel without git, and Docker all work
+too — see [`docs/installation.md`](docs/installation.md). You need Terraform
+or OpenTofu on your `PATH`; Crosswind drives whichever it finds and
+`--binary` picks one.
 
 ## Checking a stack
 
@@ -248,6 +252,20 @@ Welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) and
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Adding a severity rule or a
 CloudTrail resource mapping is a change to a YAML file, not to any code, and
 is a good first contribution.
+
+## Releases
+
+Tagged releases are on the
+[releases page](https://github.com/jetonecloud/crosswind/releases), each with
+a wheel, an sdist and a `checksums.txt`. There is no PyPI package: pin a tag
+and you know exactly what you are running.
+
+```sh
+# Verify before installing, if you'd rather not trust the URL
+gh release download v0.1.0 --repo jetonecloud/crosswind
+sha256sum --check --ignore-missing checksums.txt
+pipx install ./crosswind-0.1.0-py3-none-any.whl
+```
 
 ## License
 

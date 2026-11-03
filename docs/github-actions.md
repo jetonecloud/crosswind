@@ -99,8 +99,28 @@ every stack fail to parse.
 | `upload-artifact` | `true` | |
 | `artifact-name` | `crosswind-report` | Include a matrix value if you scan several environments. |
 | `artifact-retention-days` | `14` | Short on purpose: a report names your resources. |
-| `crosswind-version` | — | Pin for a reproducible job. |
+| `crosswind-version` | — | Release tag without the `v`, e.g. `0.1.0`. Empty installs the ref the action itself was referenced at. |
 | `python-version` | `3.12` | |
+
+### Pinning
+
+Crosswind is installed from this repository rather than PyPI, and with
+`crosswind-version` empty the action installs **the same ref it was
+referenced at**:
+
+```yaml
+- uses: jetonecloud/crosswind@v0.1.0     # installs crosswind v0.1.0
+```
+
+So pinning the action pins the tool, and the two cannot end up at different
+versions — which is an annoying thing to debug when it happens. Override only
+if you want them deliberately different:
+
+```yaml
+- uses: jetonecloud/crosswind@v0.1.0
+  with:
+    crosswind-version: "0.2.0"
+```
 
 ## Outputs
 
@@ -232,7 +252,7 @@ Every finding will say `unknown`. The drift report is complete.
 If you would rather not use it:
 
 ```yaml
-- run: pipx install crosswind
+- run: pipx install git+https://github.com/jetonecloud/crosswind@v0.1.0
 - uses: aws-actions/configure-aws-credentials@v4
   with:
     role-to-assume: ${{ vars.CROSSWIND_ROLE_ARN }}

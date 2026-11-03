@@ -30,7 +30,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/jetonecloud/crosswind"
 Issues = "https://github.com/jetonecloud/crosswind/issues"
+Releases = "https://github.com/jetonecloud/crosswind/releases"
 Security = "https://github.com/jetonecloud/crosswind/blob/main/SECURITY.md"
+Changelog = "https://github.com/jetonecloud/crosswind/blob/main/CHANGELOG.md"
 
 [project.scripts]
 crosswind = "crosswind.cli:main"

@@ -129,6 +129,39 @@ This is the part worth reading twice.
 Only the latest released version is supported with security fixes. Please
 update before reporting an issue, to confirm it still reproduces.
 
+## Verifying a release
+
+Crosswind is distributed through
+[GitHub releases](https://github.com/jetonecloud/crosswind/releases) rather
+than PyPI, and installs pin a tag. Every release carries a `checksums.txt`
+and a signed build provenance attestation.
+
+```sh
+gh release download v0.1.0 --repo jetonecloud/crosswind
+sha256sum --check --ignore-missing checksums.txt
+```
+
+The attestation is the part that matters: it ties the artifact to the
+workflow run and the commit that produced it, so a wheel uploaded by hand —
+even by someone with write access to the repository — does not verify.
+
+```sh
+gh attestation verify crosswind-0.1.0-py3-none-any.whl \
+  --repo jetonecloud/crosswind
+```
+
+The container image is attested the same way:
+
+```sh
+gh attestation verify oci://ghcr.io/jetonecloud/crosswind:0.1.0 \
+  --repo jetonecloud/crosswind
+```
+
+Installing with `pipx install git+https://...@v0.1.0` resolves the tag
+through git, so you get whatever that tag points at. A tag is mutable by
+anyone with write access; if that matters to your threat model, install the
+attested wheel from the release instead of resolving a tag.
+
 ## Reporting a vulnerability
 
 Please **do not** open a public GitHub issue for a security vulnerability.
