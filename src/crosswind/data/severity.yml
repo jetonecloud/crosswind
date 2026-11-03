@@ -1,0 +1,324 @@
+# Severity rules.
+#
+# This file is data, not code. Adding a rule needs no change to the engine,
+# which is the point: the people who know which drift matters are not
+# necessarily the people who want to read Python.
+#
+# A rule matches a drifted resource and sets its severity. The first rule
+# that matches in file order wins, so the most specific rules go first and
+# `default` is last. Every finding reports the `id` of the rule that scored
+# it, so a reader can come here and see why.
+#
+# Fields
+# ------
+#   id          Unique. Appears in every report, so make it readable.
+#   severity    critical | high | medium | low
+#   reason      One sentence, shown to the reader. Say what the risk is, not
+#               what the rule matched.
+#   types       Glob(s) against the Terraform resource type
+#               (`aws_security_group`, `aws_*`, `*`). Keyed on the type and
+#               never the provider: the registry host differs between
+#               Terraform and OpenTofu for the same resource.
+#   paths       Glob(s) against the dotted attribute path
+#               (`ingress.*.cidr_blocks.*`, `tags.*`, `*`). Omit for any.
+#   when        Optional predicate from the fixed vocabulary below. The
+#               vocabulary is deliberately closed — an arbitrary expression
+#               language in a YAML file is a sandbox escape waiting to be
+#               written.
+#   kinds       Optional: changed | deleted | replaced. Omit for any.
+#   recommend   revert | update_code | investigate
+#   recommend_reason
+#               One sentence. Crosswind never performs either action.
+#
+# Predicate vocabulary
+# --------------------
+#   any_change           Always true. The default.
+#   became_public        The new value opens something to the world:
+#                        0.0.0.0/0, ::/0, a `*` principal, or a public-access
+#                        flag flipping on.
+#   widened_cidr         The new CIDR covers strictly more addresses.
+#   encryption_disabled  A truthy encryption flag became falsey.
+#   logging_disabled     A truthy logging/audit flag became falsey.
+#   iam_widened          An IAM policy document gained a wildcard action,
+#                        wildcard resource, or wildcard principal.
+#   became_larger        A numeric or instance-size value went up.
+#   became_smaller       A numeric or instance-size value went down.
+#   deletion_protection_removed
+#                        A deletion-protection or prevent-destroy flag went off.
+
+version: 1
+
+rules:
+  # --- critical: someone opened something to the internet ---------------
+
+  - id: sg-ingress-public
+    severity: critical
+    reason: >
+      An inbound security group rule now accepts traffic from the whole
+      internet. Anything listening on that port is reachable from anywhere.
+    types: ["aws_security_group", "aws_security_group_rule", "aws_vpc_security_group_ingress_rule"]
+    paths: ["ingress.*.cidr_blocks.*", "ingress.*.ipv6_cidr_blocks.*", "cidr_blocks.*", "cidr_ipv4", "cidr_ipv6"]
+    when: became_public
+    recommend: revert
+    recommend_reason: >
+      Revert unless this was a deliberate, reviewed change. If it was
+      deliberate, put it in the code with a comment saying why.
+
+  - id: sg-ingress-widened
+    severity: high
+    reason: >
+      An inbound security group rule now accepts traffic from a wider range
+      than the code says.
+    types: ["aws_security_group", "aws_security_group_rule", "aws_vpc_security_group_ingress_rule"]
+    paths: ["ingress.*.cidr_blocks.*", "ingress.*.ipv6_cidr_blocks.*", "cidr_blocks.*", "cidr_ipv4", "cidr_ipv6"]
+    when: widened_cidr
+    recommend: revert
+    recommend_reason: >
+      Revert, or narrow it in code to the range that is actually needed.
+
+  - id: iam-policy-widened
+    severity: critical
+    reason: >
+      An IAM policy now grants more than the code does — a wildcard action,
+      resource, or principal. This is the fastest way for a small change to
+      become an account-wide one.
+    types: ["aws_iam_*", "aws_*_policy"]
+    paths: ["policy", "assume_role_policy", "policy_document", "inline_policy.*.policy"]
+    when: iam_widened
+    recommend: revert
+    recommend_reason: >
+      Revert. If the extra permission is genuinely needed, add it to the code
+      scoped to the specific actions and resources.
+
+  - id: s3-public-access
+    severity: critical
+    reason: >
+      Public access protections on this bucket were weakened, which can
+      expose its contents to anonymous readers.
+    types: ["aws_s3_bucket", "aws_s3_bucket_public_access_block", "aws_s3_bucket_acl", "aws_s3_bucket_policy"]
+    paths: ["block_public_acls", "block_public_policy", "ignore_public_acls", "restrict_public_buckets", "acl", "policy"]
+    when: became_public
+    recommend: revert
+    recommend_reason: >
+      Revert. A bucket made public outside Terraform is almost never
+      intentional.
+
+  - id: lambda-public-invoke
+    severity: critical
+    reason: >
+      This function can now be invoked by a wildcard principal.
+    types: ["aws_lambda_permission", "aws_lambda_function_url"]
+    paths: ["principal", "authorization_type"]
+    when: became_public
+    recommend: revert
+    recommend_reason: Revert, then add a scoped permission in code if it is needed.
+
+  # --- high: protections turned off -------------------------------------
+
+  - id: encryption-disabled
+    severity: high
+    reason: >
+      Encryption was turned off on this resource. Data written since the
+      change is not encrypted at rest, and turning it back on usually does
+      not retroactively encrypt what is already there.
+    types: ["*"]
+    paths: ["*encrypted*", "*encryption*", "kms_key_id", "kms_master_key_id", "sse_algorithm"]
+    when: encryption_disabled
+    recommend: revert
+    recommend_reason: >
+      Revert, and check whether anything was written while it was off.
+
+  - id: logging-disabled
+    severity: high
+    reason: >
+      Audit or access logging was turned off. Changes made from here on are
+      harder to attribute, including this one.
+    types: ["*"]
+    paths: ["*logging*", "*log_config*", "enable_logging", "audit_*"]
+    when: logging_disabled
+    recommend: revert
+    recommend_reason: Revert. Logging off is how the next incident becomes unexplainable.
+
+  - id: deletion-protection-removed
+    severity: high
+    reason: >
+      Deletion protection was removed, so this resource can now be destroyed
+      by accident.
+    types: ["*"]
+    paths: ["deletion_protection", "deletion_protection_enabled", "enable_deletion_protection", "skip_final_snapshot"]
+    when: deletion_protection_removed
+    recommend: revert
+    recommend_reason: Revert unless the resource is being decommissioned on purpose.
+
+  - id: kms-key-disabled
+    severity: high
+    reason: >
+      A KMS key was disabled or its rotation turned off. Anything that
+      depends on it for decryption may start failing.
+    types: ["aws_kms_key", "aws_kms_alias"]
+    paths: ["is_enabled", "enable_key_rotation", "policy"]
+    recommend: investigate
+    recommend_reason: >
+      Find out what depends on this key before changing it either way.
+
+  - id: resource-deleted
+    severity: high
+    reason: >
+      Terraform can no longer find this resource. Either it was deleted
+      outside Terraform, or it was moved and Terraform's record is stale.
+    types: ["*"]
+    kinds: ["deleted"]
+    recommend: investigate
+    recommend_reason: >
+      Find out whether it was deleted on purpose. If it was, remove it from
+      the code. If it was not, the next apply will recreate it — which may or
+      may not be what you want.
+
+  - id: iam-policy-changed
+    severity: high
+    reason: >
+      An IAM policy differs from the code, without an obvious widening. Any
+      permissions change deserves a read.
+    types: ["aws_iam_*"]
+    paths: ["policy", "assume_role_policy", "policy_document", "managed_policy_arns.*"]
+    recommend: investigate
+    recommend_reason: Read the diff. Permissions drift is rarely accidental and rarely harmless.
+
+  - id: route53-record-changed
+    severity: high
+    reason: >
+      A DNS record differs from the code. Traffic may be going somewhere the
+      code does not describe.
+    types: ["aws_route53_record"]
+    paths: ["records.*", "alias.*.name", "alias.*.zone_id", "ttl", "type"]
+    recommend: investigate
+    recommend_reason: >
+      Confirm where the record now points before changing it. DNS reverts
+      take effect at TTL, not immediately.
+
+  - id: network-exposure-changed
+    severity: high
+    reason: >
+      Whether this resource has a public address changed.
+    types: ["*"]
+    paths: ["publicly_accessible", "associate_public_ip_address", "map_public_ip_on_launch", "internal", "scheme"]
+    recommend: revert
+    recommend_reason: Revert unless the exposure change was deliberate and reviewed.
+
+  # --- medium: capacity, size, and anything that costs money ------------
+
+  - id: instance-size-changed
+    severity: medium
+    reason: >
+      The instance size differs from the code. This changes what you pay and
+      will be reverted by the next apply.
+    types: ["aws_instance", "aws_db_instance", "aws_rds_cluster_instance", "aws_elasticache_cluster", "aws_opensearch_domain"]
+    paths: ["instance_type", "instance_class", "node_type", "cluster_config.*instance_type"]
+    recommend: update_code
+    recommend_reason: >
+      If the new size is right, put it in the code — otherwise the next apply
+      undoes it, probably during a deploy nobody is watching.
+
+  - id: storage-size-changed
+    severity: medium
+    reason: >
+      Allocated storage differs from the code. Most storage cannot be shrunk
+      again, so a reverting apply may fail.
+    types: ["aws_db_instance", "aws_ebs_volume", "aws_instance", "aws_rds_cluster"]
+    paths: ["allocated_storage", "max_allocated_storage", "size", "root_block_device.*.volume_size", "ebs_block_device.*.volume_size"]
+    recommend: update_code
+    recommend_reason: >
+      Reconcile the code with reality. Check whether the revert direction is
+      even possible before planning one.
+
+  - id: lambda-config-changed
+    severity: medium
+    reason: >
+      Function configuration differs from the code, which changes its
+      behaviour under load.
+    types: ["aws_lambda_function"]
+    paths: ["memory_size", "timeout", "reserved_concurrent_executions", "runtime", "handler", "layers.*"]
+    recommend: update_code
+    recommend_reason: If the new configuration is the one that works, write it down.
+
+  - id: ecs-task-definition-changed
+    severity: medium
+    reason: >
+      The running task definition is not the one the code points at, so the
+      deployed image may not be the one in the repository.
+    types: ["aws_ecs_service"]
+    paths: ["task_definition", "launch_type", "platform_version"]
+    recommend: investigate
+    recommend_reason: >
+      Normal if you deploy images outside Terraform — in which case add an
+      ignore rule and a `lifecycle.ignore_changes` so it stops reappearing.
+
+  - id: autoscaling-bounds-changed
+    severity: medium
+    reason: >
+      The autoscaling minimum or maximum differs from the code, which changes
+      both the floor on cost and the ceiling on capacity.
+    types: ["aws_autoscaling_group", "aws_appautoscaling_target"]
+    paths: ["min_size", "max_size", "min_capacity", "max_capacity"]
+    recommend: update_code
+    recommend_reason: >
+      Bounds are a deliberate decision. Put the one you meant in the code.
+
+  - id: lb-listener-changed
+    severity: medium
+    reason: >
+      A load balancer listener or its certificate differs from the code.
+    types: ["aws_lb_listener", "aws_alb_listener", "aws_lb", "aws_alb"]
+    paths: ["certificate_arn", "ssl_policy", "port", "protocol", "default_action.*"]
+    recommend: investigate
+    recommend_reason: >
+      Check what is serving traffic now. A certificate swapped by hand is
+      often a renewal nobody automated.
+
+  - id: backup-retention-changed
+    severity: medium
+    reason: >
+      Backup retention differs from the code, which changes how far back you
+      can recover.
+    types: ["aws_db_instance", "aws_rds_cluster", "aws_backup_plan"]
+    paths: ["backup_retention_period", "backup_window", "rule.*.lifecycle.*"]
+    recommend: update_code
+    recommend_reason: Agree on a retention period and write it down.
+
+  # --- low: noise, and things that are fine but should be recorded ------
+
+  - id: capacity-only-change
+    severity: low
+    reason: >
+      Only the current desired capacity differs. This is what autoscaling is
+      for, and it drifts by design.
+    types: ["aws_autoscaling_group", "aws_ecs_service", "aws_appautoscaling_target"]
+    paths: ["desired_capacity", "desired_count"]
+    recommend: update_code
+    recommend_reason: >
+      Expected drift. Add `lifecycle { ignore_changes = [...] }` in the code
+      and an entry in `.crosswindignore` so it stops being reported.
+
+  - id: tags-only-change
+    severity: low
+    reason: >
+      Only tags differ. Worth reconciling for cost allocation, but nothing is
+      at risk.
+    types: ["*"]
+    paths: ["tags.*", "tags_all.*", "tag.*.value"]
+    recommend: update_code
+    recommend_reason: >
+      Put the tags in the code, or in a default_tags block if everything
+      should have them.
+
+  - id: default
+    severity: low
+    reason: >
+      This resource differs from the code in a way no specific rule covers.
+      It is still drift, and the next apply will change it back.
+    types: ["*"]
+    recommend: investigate
+    recommend_reason: >
+      Read the diff and decide whether the code or the live resource is
+      right. No rule has an opinion about this attribute yet — if it should,
+      adding one to severity.yml is a small change.
