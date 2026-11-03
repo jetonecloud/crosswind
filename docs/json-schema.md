@@ -279,10 +279,12 @@ number nobody can check.
 ```python
 import json
 
+
 def load(path):
     with open(path) as handle:
         report = json.load(handle)
     return {item["id"]: item for item in report["findings"]}
+
 
 before, after = load("monday.json"), load("friday.json")
 

@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jetonecloud/crosswind/blob/main/SECURITY.md
+    about: >
+      Do not open a public issue. Email security@jetonecloud.com — especially
+      for anything that could write to infrastructure, leak a secret, or
+      report a failed stack as clean.
+  - name: Help fixing what Crosswind found
+    url: https://jetonecloud.com/book
+    about: Jet1 does AWS infrastructure, deploys and on-call under an SLA.
