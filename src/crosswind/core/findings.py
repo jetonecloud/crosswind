@@ -147,6 +147,13 @@ class Event:
 
     Copied through rather than interpreted, so a reader can paste the event
     ID into the console and see the same thing we saw.
+
+    The field set follows what `LookupEvents` actually returns, which is
+    narrower than the full CloudTrail record: `EventId`, `EventName`,
+    `ReadOnly`, `AccessKeyId`, `EventTime`, `EventSource`, `Username`,
+    `Resources` and the `CloudTrailEvent` JSON blob. Notably there is **no**
+    region field in the summary — the region lives inside the blob — which is
+    the kind of thing you only find out by asking the service model.
     """
 
     event_id: str
@@ -161,6 +168,29 @@ class Event:
     #: Present when the caller was a service or an assumed role and
     #: CloudTrail could tell us more than `Username` carries.
     principal_type: str | None = None
+    #: `(ResourceType, ResourceName)` pairs CloudTrail associated with the
+    #: event. This is what makes the resource-match signal real rather than
+    #: an assumption about why the event came back.
+    resources: tuple[tuple[str, str], ...] = ()
+    #: CloudTrail's own flag. A read-only call cannot have caused drift, so
+    #: these are dropped before ranking.
+    read_only: bool | None = None
+
+    def mentions(self, value: str) -> bool:
+        """Does this event name `value` in its resource list?"""
+        if not value:
+            return False
+        needle = value.strip().lower()
+        for _kind, name in self.resources:
+            if not name:
+                continue
+            haystack = name.strip().lower()
+            # An ARN contains the name or ID, so match either direction:
+            # we may have looked up `my-role` and CloudTrail may have
+            # recorded the full ARN, or the other way round.
+            if needle == haystack or needle in haystack or haystack in needle:
+                return True
+        return False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +201,8 @@ class Event:
             "event_source": self.event_source,
             "region": self.region,
             "principal_type": self.principal_type,
+            "resources": [{"type": kind, "name": name} for kind, name in self.resources],
+            "read_only": self.read_only,
         }
 
 

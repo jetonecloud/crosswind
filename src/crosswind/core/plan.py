@@ -101,6 +101,16 @@ class DriftedResource:
     def is_deleted(self) -> bool:
         return self.kind is DriftKind.DELETED
 
+    @property
+    def changed_paths(self) -> tuple[str, ...]:
+        """The attribute paths that drifted.
+
+        Used by the CloudTrail mapping to pick the event names that change
+        these specific attributes, which is a much stronger signal than the
+        resource type's general event list.
+        """
+        return tuple(change.path for change in self.changes)
+
 
 @dataclass(frozen=True)
 class PlanSummary:

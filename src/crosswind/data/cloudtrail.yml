@@ -1,0 +1,522 @@
+# How to find the CloudTrail event behind a drifted resource.
+#
+# This file is data so that adding a resource type needs no change to the
+# ranking logic. If Crosswind says "unknown" for something it should be able
+# to attribute, adding an entry here is usually the whole fix.
+#
+# Keyed on the **Terraform resource type**, never the provider name: the same
+# resource is registry.terraform.io/hashicorp/aws under Terraform and
+# registry.opentofu.org/hashicorp/aws under OpenTofu, and the type string is
+# identical in both.
+#
+# Fields
+# ------
+#   lookup_attributes
+#       State attributes to try, in order, as the CloudTrail
+#       ResourceName lookup value. The first one present and non-empty wins.
+#       `id` is almost always right; the others are for resources whose
+#       CloudTrail records use a name rather than an ID.
+#   resource_type
+#       The CloudTrail ResourceType string, recorded for the reader. Not used
+#       as a lookup key: LookupEvents can filter by ResourceType *or*
+#       ResourceName but combining them is not supported, and ResourceName is
+#       far more selective.
+#   global
+#       true for services that log only to us-east-1 whatever region the
+#       resource is in: IAM, Route 53, CloudFront, STS, Organizations,
+#       WAF (global scope), Shield. Getting this wrong means looking in an
+#       empty region and reporting "unknown" for a change that is right there.
+#   events
+#       Event names that plausibly cause drift in this resource. Matching one
+#       of these is worth 0.3 in the ranking and is required for `high`
+#       confidence. Attribute-specific lists under `attribute_events` are
+#       preferred where the mapping is tight enough to be useful.
+#   attribute_events
+#       Optional. Maps an attribute path glob to the event names that change
+#       specifically that attribute. A match here is a much stronger signal
+#       than a match in the general `events` list.
+#
+# A note on completeness: this is the set of resources where the mapping is
+# reliable, not the set of resources Crosswind detects drift in. Drift
+# detection covers everything Terraform manages; attribution covers what is
+# in this file. Anything else attributes to "unknown" with the reason
+# `unmapped_resource_type`, which is an honest answer and a to-do list.
+
+version: 1
+
+resources:
+  # --- security groups ------------------------------------------------
+
+  aws_security_group:
+    resource_type: AWS::EC2::SecurityGroup
+    lookup_attributes: [id, name]
+    events:
+      - AuthorizeSecurityGroupIngress
+      - AuthorizeSecurityGroupEgress
+      - RevokeSecurityGroupIngress
+      - RevokeSecurityGroupEgress
+      - ModifySecurityGroupRules
+      - CreateSecurityGroup
+      - CreateTags
+      - DeleteTags
+    attribute_events:
+      "ingress*":
+        - AuthorizeSecurityGroupIngress
+        - RevokeSecurityGroupIngress
+        - ModifySecurityGroupRules
+      "egress*":
+        - AuthorizeSecurityGroupEgress
+        - RevokeSecurityGroupEgress
+        - ModifySecurityGroupRules
+      "tags*": [CreateTags, DeleteTags]
+
+  aws_security_group_rule:
+    resource_type: AWS::EC2::SecurityGroup
+    lookup_attributes: [security_group_id, id]
+    events:
+      - AuthorizeSecurityGroupIngress
+      - AuthorizeSecurityGroupEgress
+      - RevokeSecurityGroupIngress
+      - RevokeSecurityGroupEgress
+      - ModifySecurityGroupRules
+
+  aws_vpc_security_group_ingress_rule:
+    resource_type: AWS::EC2::SecurityGroup
+    lookup_attributes: [security_group_rule_id, security_group_id, id]
+    events:
+      - AuthorizeSecurityGroupIngress
+      - RevokeSecurityGroupIngress
+      - ModifySecurityGroupRules
+
+  aws_vpc_security_group_egress_rule:
+    resource_type: AWS::EC2::SecurityGroup
+    lookup_attributes: [security_group_rule_id, security_group_id, id]
+    events:
+      - AuthorizeSecurityGroupEgress
+      - RevokeSecurityGroupEgress
+      - ModifySecurityGroupRules
+
+  # --- IAM (global: logs to us-east-1) --------------------------------
+
+  aws_iam_role:
+    resource_type: AWS::IAM::Role
+    lookup_attributes: [name, id, arn]
+    global: true
+    events:
+      - UpdateRole
+      - UpdateAssumeRolePolicy
+      - PutRolePolicy
+      - DeleteRolePolicy
+      - AttachRolePolicy
+      - DetachRolePolicy
+      - UpdateRoleDescription
+      - TagRole
+      - UntagRole
+    attribute_events:
+      "assume_role_policy": [UpdateAssumeRolePolicy]
+      "managed_policy_arns*": [AttachRolePolicy, DetachRolePolicy]
+      "inline_policy*": [PutRolePolicy, DeleteRolePolicy]
+      "max_session_duration": [UpdateRole]
+      "tags*": [TagRole, UntagRole]
+
+  aws_iam_role_policy:
+    resource_type: AWS::IAM::Role
+    lookup_attributes: [role, name, id]
+    global: true
+    events: [PutRolePolicy, DeleteRolePolicy]
+
+  aws_iam_policy:
+    resource_type: AWS::IAM::Policy
+    lookup_attributes: [name, arn, id]
+    global: true
+    events:
+      - CreatePolicyVersion
+      - DeletePolicyVersion
+      - SetDefaultPolicyVersion
+      - TagPolicy
+      - UntagPolicy
+    attribute_events:
+      "policy": [CreatePolicyVersion, SetDefaultPolicyVersion]
+
+  aws_iam_role_policy_attachment:
+    resource_type: AWS::IAM::Role
+    lookup_attributes: [role, id]
+    global: true
+    events: [AttachRolePolicy, DetachRolePolicy]
+
+  aws_iam_user:
+    resource_type: AWS::IAM::User
+    lookup_attributes: [name, id, arn]
+    global: true
+    events:
+      - UpdateUser
+      - PutUserPolicy
+      - DeleteUserPolicy
+      - AttachUserPolicy
+      - DetachUserPolicy
+      - TagUser
+      - UntagUser
+
+  aws_iam_instance_profile:
+    resource_type: AWS::IAM::InstanceProfile
+    lookup_attributes: [name, id, arn]
+    global: true
+    events: [AddRoleToInstanceProfile, RemoveRoleFromInstanceProfile]
+
+  # --- S3 --------------------------------------------------------------
+  #
+  # Bucket *configuration* changes are management events and show up here.
+  # Object-level changes are data events, which most accounts do not log and
+  # which Crosswind therefore cannot see. The report says so.
+
+  aws_s3_bucket:
+    resource_type: AWS::S3::Bucket
+    lookup_attributes: [bucket, id]
+    events:
+      - PutBucketPolicy
+      - DeleteBucketPolicy
+      - PutBucketAcl
+      - PutBucketPublicAccessBlock
+      - DeleteBucketPublicAccessBlock
+      - PutBucketEncryption
+      - DeleteBucketEncryption
+      - PutBucketVersioning
+      - PutBucketLogging
+      - PutBucketLifecycleConfiguration
+      - PutBucketTagging
+      - PutBucketCors
+      - PutBucketWebsite
+    attribute_events:
+      "policy": [PutBucketPolicy, DeleteBucketPolicy]
+      "acl": [PutBucketAcl]
+      "versioning*": [PutBucketVersioning]
+      "*encryption*": [PutBucketEncryption, DeleteBucketEncryption]
+      "logging*": [PutBucketLogging]
+      "tags*": [PutBucketTagging]
+
+  aws_s3_bucket_public_access_block:
+    resource_type: AWS::S3::Bucket
+    lookup_attributes: [bucket, id]
+    events: [PutBucketPublicAccessBlock, DeleteBucketPublicAccessBlock]
+
+  aws_s3_bucket_policy:
+    resource_type: AWS::S3::Bucket
+    lookup_attributes: [bucket, id]
+    events: [PutBucketPolicy, DeleteBucketPolicy]
+
+  aws_s3_bucket_server_side_encryption_configuration:
+    resource_type: AWS::S3::Bucket
+    lookup_attributes: [bucket, id]
+    events: [PutBucketEncryption, DeleteBucketEncryption]
+
+  aws_s3_bucket_versioning:
+    resource_type: AWS::S3::Bucket
+    lookup_attributes: [bucket, id]
+    events: [PutBucketVersioning]
+
+  aws_s3_bucket_acl:
+    resource_type: AWS::S3::Bucket
+    lookup_attributes: [bucket, id]
+    events: [PutBucketAcl]
+
+  # --- EC2 -------------------------------------------------------------
+
+  aws_instance:
+    resource_type: AWS::EC2::Instance
+    lookup_attributes: [id]
+    events:
+      - ModifyInstanceAttribute
+      - StopInstances
+      - StartInstances
+      - RebootInstances
+      - TerminateInstances
+      - CreateTags
+      - DeleteTags
+      - AssociateIamInstanceProfile
+      - ReplaceIamInstanceProfileAssociation
+      - ModifyInstanceMetadataOptions
+      - AttachVolume
+      - DetachVolume
+    attribute_events:
+      "instance_type": [ModifyInstanceAttribute]
+      "iam_instance_profile": [AssociateIamInstanceProfile, ReplaceIamInstanceProfileAssociation]
+      "disable_api_termination": [ModifyInstanceAttribute]
+      "metadata_options*": [ModifyInstanceMetadataOptions]
+      "tags*": [CreateTags, DeleteTags]
+      "vpc_security_group_ids*": [ModifyInstanceAttribute]
+
+  aws_ebs_volume:
+    resource_type: AWS::EC2::Volume
+    lookup_attributes: [id]
+    events: [ModifyVolume, CreateTags, DeleteTags, AttachVolume, DetachVolume]
+    attribute_events:
+      "size": [ModifyVolume]
+      "type": [ModifyVolume]
+      "iops": [ModifyVolume]
+      "throughput": [ModifyVolume]
+      "tags*": [CreateTags, DeleteTags]
+
+  # --- RDS -------------------------------------------------------------
+
+  aws_db_instance:
+    resource_type: AWS::RDS::DBInstance
+    lookup_attributes: [identifier, id, arn]
+    events:
+      - ModifyDBInstance
+      - RebootDBInstance
+      - StopDBInstance
+      - StartDBInstance
+      - AddTagsToResource
+      - RemoveTagsFromResource
+      - ModifyDBParameterGroup
+    attribute_events:
+      "instance_class": [ModifyDBInstance]
+      "allocated_storage": [ModifyDBInstance]
+      "backup_retention_period": [ModifyDBInstance]
+      "deletion_protection": [ModifyDBInstance]
+      "publicly_accessible": [ModifyDBInstance]
+      "multi_az": [ModifyDBInstance]
+      "tags*": [AddTagsToResource, RemoveTagsFromResource]
+
+  aws_rds_cluster:
+    resource_type: AWS::RDS::DBCluster
+    lookup_attributes: [cluster_identifier, id, arn]
+    events: [ModifyDBCluster, AddTagsToResource, RemoveTagsFromResource]
+
+  aws_rds_cluster_instance:
+    resource_type: AWS::RDS::DBInstance
+    lookup_attributes: [identifier, id, arn]
+    events: [ModifyDBInstance]
+
+  # --- Lambda ----------------------------------------------------------
+
+  aws_lambda_function:
+    resource_type: AWS::Lambda::Function
+    lookup_attributes: [function_name, id, arn]
+    events:
+      - UpdateFunctionConfiguration
+      - UpdateFunctionCode
+      - PublishVersion
+      - AddPermission
+      - RemovePermission
+      - TagResource
+      - UntagResource
+      - PutFunctionConcurrency
+      - DeleteFunctionConcurrency
+    attribute_events:
+      "memory_size": [UpdateFunctionConfiguration]
+      "timeout": [UpdateFunctionConfiguration]
+      "environment*": [UpdateFunctionConfiguration]
+      "runtime": [UpdateFunctionConfiguration]
+      "handler": [UpdateFunctionConfiguration]
+      "reserved_concurrent_executions":
+        [PutFunctionConcurrency, DeleteFunctionConcurrency]
+      "source_code_hash": [UpdateFunctionCode]
+      "layers*": [UpdateFunctionConfiguration]
+
+  aws_lambda_permission:
+    resource_type: AWS::Lambda::Function
+    lookup_attributes: [function_name, id]
+    events: [AddPermission, RemovePermission]
+
+  # --- load balancers --------------------------------------------------
+
+  aws_lb:
+    resource_type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    lookup_attributes: [arn, name, id]
+    events:
+      - ModifyLoadBalancerAttributes
+      - SetSecurityGroups
+      - SetSubnets
+      - SetIpAddressType
+      - AddTags
+      - RemoveTags
+    attribute_events:
+      "security_groups*": [SetSecurityGroups]
+      "subnets*": [SetSubnets]
+      "enable_deletion_protection": [ModifyLoadBalancerAttributes]
+      "idle_timeout": [ModifyLoadBalancerAttributes]
+
+  aws_alb:
+    resource_type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    lookup_attributes: [arn, name, id]
+    events: [ModifyLoadBalancerAttributes, SetSecurityGroups, SetSubnets]
+
+  aws_lb_listener:
+    resource_type: AWS::ElasticLoadBalancingV2::Listener
+    lookup_attributes: [arn, id]
+    events:
+      - ModifyListener
+      - AddListenerCertificates
+      - RemoveListenerCertificates
+    attribute_events:
+      "certificate_arn": [ModifyListener, AddListenerCertificates]
+      "ssl_policy": [ModifyListener]
+      "default_action*": [ModifyListener]
+
+  aws_lb_target_group:
+    resource_type: AWS::ElasticLoadBalancingV2::TargetGroup
+    lookup_attributes: [arn, name, id]
+    events: [ModifyTargetGroup, ModifyTargetGroupAttributes, RegisterTargets, DeregisterTargets]
+
+  # --- ECS -------------------------------------------------------------
+
+  aws_ecs_service:
+    resource_type: AWS::ECS::Service
+    lookup_attributes: [name, id, arn]
+    events: [UpdateService, TagResource, UntagResource]
+    attribute_events:
+      "desired_count": [UpdateService]
+      "task_definition": [UpdateService]
+      "platform_version": [UpdateService]
+      "deployment_configuration*": [UpdateService]
+
+  aws_ecs_cluster:
+    resource_type: AWS::ECS::Cluster
+    lookup_attributes: [name, id, arn]
+    events: [UpdateClusterSettings, PutClusterCapacityProviders, TagResource, UntagResource]
+
+  aws_ecs_task_definition:
+    resource_type: AWS::ECS::TaskDefinition
+    lookup_attributes: [family, arn, id]
+    events: [RegisterTaskDefinition, DeregisterTaskDefinition]
+
+  # --- autoscaling -----------------------------------------------------
+
+  aws_autoscaling_group:
+    resource_type: AWS::AutoScaling::AutoScalingGroup
+    lookup_attributes: [name, id, arn]
+    events:
+      - UpdateAutoScalingGroup
+      - SetDesiredCapacity
+      - CreateOrUpdateTags
+      - DeleteTags
+      - AttachLoadBalancerTargetGroups
+      - DetachLoadBalancerTargetGroups
+      - SuspendProcesses
+      - ResumeProcesses
+    attribute_events:
+      "desired_capacity": [SetDesiredCapacity, UpdateAutoScalingGroup]
+      "min_size": [UpdateAutoScalingGroup]
+      "max_size": [UpdateAutoScalingGroup]
+      "target_group_arns*":
+        [AttachLoadBalancerTargetGroups, DetachLoadBalancerTargetGroups]
+      "tags*": [CreateOrUpdateTags, DeleteTags]
+
+  aws_launch_template:
+    resource_type: AWS::EC2::LaunchTemplate
+    lookup_attributes: [id, name]
+    events: [CreateLaunchTemplateVersion, ModifyLaunchTemplate]
+
+  # --- KMS -------------------------------------------------------------
+
+  aws_kms_key:
+    resource_type: AWS::KMS::Key
+    lookup_attributes: [key_id, id, arn]
+    events:
+      - PutKeyPolicy
+      - EnableKey
+      - DisableKey
+      - EnableKeyRotation
+      - DisableKeyRotation
+      - ScheduleKeyDeletion
+      - CancelKeyDeletion
+      - TagResource
+      - UntagResource
+      - UpdateKeyDescription
+    attribute_events:
+      "policy": [PutKeyPolicy]
+      "is_enabled": [EnableKey, DisableKey]
+      "enable_key_rotation": [EnableKeyRotation, DisableKeyRotation]
+
+  aws_kms_alias:
+    resource_type: AWS::KMS::Alias
+    lookup_attributes: [name, id]
+    events: [UpdateAlias, CreateAlias, DeleteAlias]
+
+  # --- Route 53 (global: logs to us-east-1) ---------------------------
+
+  aws_route53_record:
+    resource_type: AWS::Route53::HostedZone
+    lookup_attributes: [zone_id, id]
+    global: true
+    events: [ChangeResourceRecordSets]
+    attribute_events:
+      "records*": [ChangeResourceRecordSets]
+      "alias*": [ChangeResourceRecordSets]
+      "ttl": [ChangeResourceRecordSets]
+
+  aws_route53_zone:
+    resource_type: AWS::Route53::HostedZone
+    lookup_attributes: [zone_id, id, name]
+    global: true
+    events: [UpdateHostedZoneComment, AssociateVPCWithHostedZone, DisassociateVPCFromHostedZone]
+
+  # --- a few more that come up often ----------------------------------
+
+  aws_sqs_queue:
+    resource_type: AWS::SQS::Queue
+    lookup_attributes: [name, id, url, arn]
+    events: [SetQueueAttributes, TagQueue, UntagQueue, AddPermission, RemovePermission]
+
+  aws_sns_topic:
+    resource_type: AWS::SNS::Topic
+    lookup_attributes: [name, id, arn]
+    events: [SetTopicAttributes, AddPermission, RemovePermission, TagResource, UntagResource]
+
+  aws_dynamodb_table:
+    resource_type: AWS::DynamoDB::Table
+    lookup_attributes: [name, id, arn]
+    events: [UpdateTable, UpdateTimeToLive, UpdateContinuousBackups, TagResource, UntagResource]
+
+  aws_cloudwatch_log_group:
+    resource_type: AWS::Logs::LogGroup
+    lookup_attributes: [name, id, arn]
+    events: [PutRetentionPolicy, DeleteRetentionPolicy, AssociateKmsKey, DisassociateKmsKey, TagResource]
+    attribute_events:
+      "retention_in_days": [PutRetentionPolicy, DeleteRetentionPolicy]
+      "kms_key_id": [AssociateKmsKey, DisassociateKmsKey]
+
+  aws_efs_file_system:
+    resource_type: AWS::EFS::FileSystem
+    lookup_attributes: [id, arn]
+    events: [UpdateFileSystem, PutBackupPolicy, PutLifecycleConfiguration, PutFileSystemPolicy]
+
+  aws_elasticache_cluster:
+    resource_type: AWS::ElastiCache::CacheCluster
+    lookup_attributes: [cluster_id, id, arn]
+    events: [ModifyCacheCluster, AddTagsToResource, RemoveTagsFromResource]
+
+  aws_cloudfront_distribution:
+    resource_type: AWS::CloudFront::Distribution
+    lookup_attributes: [id, arn]
+    global: true
+    events: [UpdateDistribution, TagResource, UntagResource]
+
+  aws_api_gateway_rest_api:
+    resource_type: AWS::ApiGateway::RestApi
+    lookup_attributes: [id, name]
+    events: [UpdateRestApi, PutRestApi, CreateDeployment]
+
+  aws_eks_cluster:
+    resource_type: AWS::EKS::Cluster
+    lookup_attributes: [name, id, arn]
+    events: [UpdateClusterConfig, UpdateClusterVersion, TagResource, UntagResource]
+
+  aws_secretsmanager_secret:
+    resource_type: AWS::SecretsManager::Secret
+    lookup_attributes: [name, id, arn]
+    events: [UpdateSecret, PutResourcePolicy, DeleteResourcePolicy, TagResource, UntagResource]
+
+# Services that log to us-east-1 regardless of where the resource lives.
+# Used as a fallback when a resource type is not in the map above but its
+# provider prefix is recognisable, and as documentation of the rule.
+global_services:
+  - iam
+  - route53
+  - cloudfront
+  - sts
+  - organizations
+  - shield
+  - waf
+  - globalaccelerator
