@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv/
+uv.lock.bak
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# Type checking / lint caches
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# Crosswind output (never commit a report — it names your resources)
+reports/
+crosswind-report-*
+*.crosswind.json
+
+# Terraform working files. A plan file contains the full prior state, which
+# means secrets; it must never reach a commit.
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+
+# AWS / secrets — defense in depth, these must never exist in this repo
+.aws/
+*.pem
+*.key
+credentials
+credentials.json
+.env
+.env.*
+!.env.example
+
+# Local drafts and notes
+.local/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
