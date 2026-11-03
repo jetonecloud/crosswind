@@ -1,0 +1,104 @@
+# Prices used for cost estimates.
+#
+# us-east-1 on-demand list prices. Deliberately a small, static table rather
+# than a call to the Pricing API: an estimate that needs a network round trip
+# is an estimate that fails in CI, and the whole point of these numbers is to
+# be checkable by a reader with the AWS pricing page open.
+#
+# Everything here is read as "at least this much". Savings Plans, Reserved
+# Instances, Spot, committed-use discounts and volume tiers all make the real
+# figure *lower*, never higher, so an estimate derived from this table is an
+# upper bound on the delta and is described as one.
+#
+# What is deliberately absent: anything whose cost depends on utilisation,
+# requests, or data transfer. There is no NAT gateway price here, no
+# per-request Lambda price, no inter-AZ transfer price. Crosswind would have
+# to invent a traffic volume to use them, and a plausible-looking invented
+# number in a report to a manager is worse than no number.
+#
+# Last checked: 2026-11. If you update a price, update the date.
+
+version: 1
+checked: "2026-11"
+currency: USD
+region: us-east-1
+
+# Billable hours in a month. AWS's own convention for monthly pricing.
+hours_per_month: 730
+
+# EC2 on-demand, Linux, per hour. Only the families people actually drift
+# between by hand; an unlisted size produces no estimate rather than a guess.
+ec2:
+  t3.nano: 0.0052
+  t3.micro: 0.0104
+  t3.small: 0.0208
+  t3.medium: 0.0416
+  t3.large: 0.0832
+  t3.xlarge: 0.1664
+  t3.2xlarge: 0.3328
+  t4g.micro: 0.0084
+  t4g.small: 0.0168
+  t4g.medium: 0.0336
+  t4g.large: 0.0672
+  m5.large: 0.096
+  m5.xlarge: 0.192
+  m5.2xlarge: 0.384
+  m5.4xlarge: 0.768
+  m6i.large: 0.096
+  m6i.xlarge: 0.192
+  m6i.2xlarge: 0.384
+  m6i.4xlarge: 0.768
+  c5.large: 0.085
+  c5.xlarge: 0.17
+  c5.2xlarge: 0.34
+  c5.4xlarge: 0.68
+  c6i.large: 0.085
+  c6i.xlarge: 0.17
+  c6i.2xlarge: 0.34
+  r5.large: 0.126
+  r5.xlarge: 0.252
+  r5.2xlarge: 0.504
+  r5.4xlarge: 1.008
+  r6i.large: 0.126
+  r6i.xlarge: 0.252
+  r6i.2xlarge: 0.504
+
+# RDS on-demand, single-AZ, per hour. A Multi-AZ instance is roughly double,
+# and the estimator says so rather than silently assuming either way.
+rds:
+  db.t3.micro: 0.017
+  db.t3.small: 0.034
+  db.t3.medium: 0.068
+  db.t3.large: 0.136
+  db.t4g.micro: 0.016
+  db.t4g.small: 0.032
+  db.t4g.medium: 0.065
+  db.t4g.large: 0.129
+  db.m5.large: 0.171
+  db.m5.xlarge: 0.342
+  db.m5.2xlarge: 0.684
+  db.m6g.large: 0.159
+  db.m6g.xlarge: 0.318
+  db.r5.large: 0.24
+  db.r5.xlarge: 0.48
+  db.r5.2xlarge: 0.96
+  db.r6g.large: 0.226
+  db.r6g.xlarge: 0.452
+
+# Per GB-month.
+ebs:
+  gp2: 0.10
+  gp3: 0.08
+  io1: 0.125
+  io2: 0.125
+  st1: 0.045
+  sc1: 0.015
+  standard: 0.05
+
+# RDS allocated storage, per GB-month.
+rds_storage:
+  gp2: 0.115
+  gp3: 0.115
+  io1: 0.125
+  standard: 0.10
+  aurora: 0.10
