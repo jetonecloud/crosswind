@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Read-only IAM role for Jet1 Crosswind. Creates a role that Crosswind can
+  assume to refresh Terraform state and look up CloudTrail events. Contains no
+  action that creates, modifies or deletes anything.
+
+  Read iam/README.md before deploying this. The refresh permissions are broad
+  by necessity and the tradeoff is explained there honestly — this template is
+  the convenient option, not the narrowest one.
+
+Parameters:
+  TrustedPrincipalArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of the IAM user or role that will assume this role. Leave empty if
+      you are using GitHub Actions OIDC instead, and fill in GitHubRepository.
+
+  GitHubRepository:
+    Type: String
+    Default: ""
+    Description: >
+      For GitHub Actions OIDC, as "owner/repo". Leave empty for a principal
+      ARN instead. Requires the GitHub OIDC provider to already exist in the
+      account — see iam/README.md.
+
+  GitHubBranch:
+    Type: String
+    Default: "main"
+    Description: >
+      Branch allowed to assume the role via OIDC. Narrower than a wildcard on
+      purpose: a scheduled drift scan runs from one branch.
+
+  ExternalId:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >
+      Optional external ID to require on AssumeRole. Recommended for
+      cross-account trust.
+
+  StateBucket:
+    Type: String
+    Default: ""
+    Description: >
+      Name of the S3 bucket holding your Terraform state. Leave empty if your
+      state is not in S3; the state-read statement is then omitted entirely
+      rather than widened.
+
+  StateKmsKeyArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of the KMS key your state bucket is encrypted with, if any. Leave
+      empty for SSE-S3 or an unencrypted bucket.
+
+  IncludeRefreshPermissions:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Whether to attach the broad Describe*/Get*/List* permissions a refresh
+      needs. Set to "false" to deploy the role with only CloudTrail and state
+      access, then attach your own narrower policy — see iam/README.md for why
+      you might want to.
+
+  RoleName:
+    Type: String
+    Default: CrosswindReadOnlyRole
+
+Conditions:
+  HasPrincipal: !Not [!Equals [!Ref TrustedPrincipalArn, ""]]
+  HasGitHub: !Not [!Equals [!Ref GitHubRepository, ""]]
+  HasExternalId: !Not [!Equals [!Ref ExternalId, ""]]
+  HasStateBucket: !Not [!Equals [!Ref StateBucket, ""]]
+  HasStateKey: !Not [!Equals [!Ref StateKmsKeyArn, ""]]
+  WantsRefresh: !Equals [!Ref IncludeRefreshPermissions, "true"]
+
+Resources:
+  # Always attached. These two are the only permissions unique to Crosswind:
+  # everything else is permissions Terraform needs to refresh.
+  CrosswindCorePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${RoleName}-core"
+      Description: >
+        CloudTrail lookup and caller identity. The only two actions Crosswind
+        itself makes; everything else is Terraform refreshing.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CrosswindIdentity
+            Effect: Allow
+            Action:
+              - sts:GetCallerIdentity
+            Resource: "*"
+          - Sid: CrosswindAttribution
+            Effect: Allow
+            # The whole of attribution. Note there is no cloudtrail:Get* or
+            # Describe* here: Crosswind does not read trail configuration,
+            # only the event history.
+            Action:
+              - cloudtrail:LookupEvents
+            Resource: "*"
+
+  # Scoped to one bucket and one key. Omitted when you have no S3 backend,
+  # rather than widened to all buckets.
+  CrosswindStatePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: HasStateBucket
+    Properties:
+      ManagedPolicyName: !Sub "${RoleName}-state"
+      Description: Read-only access to the Terraform state bucket, and decrypt.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CrosswindStateRead
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetBucketVersioning
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${StateBucket}"
+              - !Sub "arn:${AWS::Partition}:s3:::${StateBucket}/*"
+          # Decrypt only, never Encrypt or GenerateDataKey. Crosswind reads
+          # state and never writes it, so it has no use for either.
+          - !If
+            - HasStateKey
+            - Sid: CrosswindStateDecrypt
+              Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+              Resource: !Ref StateKmsKeyArn
+            - !Ref AWS::NoValue
+
+  # The broad one. See iam/README.md for the tradeoff: a refresh asks every
+  # provider to re-read every resource the stack manages, so the permissions
+  # it needs are a function of what your stacks contain rather than of
+  # anything Crosswind decides.
+  CrosswindRefreshPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: WantsRefresh
+    Properties:
+      ManagedPolicyName: !Sub "${RoleName}-refresh"
+      Description: >
+        Describe/Get/List permissions Terraform needs to refresh state. Broad,
+        read-only, and narrowable - see iam/README.md.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CrosswindRefreshReadOnly
+            Effect: Allow
+            Action:
+              - ec2:Describe*
+              - ec2:Get*
+              - elasticloadbalancing:Describe*
+              - autoscaling:Describe*
+              - rds:Describe*
+              - rds:ListTagsForResource
+              - iam:Get*
+              - iam:List*
+              - s3:GetBucket*
+              - s3:GetEncryptionConfiguration
+              - s3:GetLifecycleConfiguration
+              - s3:GetReplicationConfiguration
+              - s3:GetAccelerateConfiguration
+              - s3:ListAllMyBuckets
+              - lambda:Get*
+              - lambda:List*
+              - ecs:Describe*
+              - ecs:List*
+              - ecr:Describe*
+              - ecr:GetRepositoryPolicy
+              - ecr:ListTagsForResource
+              - eks:Describe*
+              - eks:List*
+              - kms:Describe*
+              - kms:Get*
+              - kms:List*
+              - route53:Get*
+              - route53:List*
+              - cloudfront:Get*
+              - cloudfront:List*
+              - logs:Describe*
+              - logs:ListTagsForResource
+              - sns:Get*
+              - sns:List*
+              - sqs:GetQueueAttributes
+              - sqs:ListQueues
+              - sqs:ListQueueTags
+              - dynamodb:Describe*
+              - dynamodb:ListTagsOfResource
+              - elasticache:Describe*
+              - elasticache:ListTagsForResource
+              - efs:Describe*
+              - apigateway:GET
+              - cloudwatch:Describe*
+              - cloudwatch:Get*
+              - cloudwatch:List*
+              - secretsmanager:DescribeSecret
+              - secretsmanager:GetResourcePolicy
+              - secretsmanager:ListSecrets
+              - acm:Describe*
+              - acm:List*
+              - tag:GetResources
+            Resource: "*"
+
+  CrosswindRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Role assumed by Jet1 Crosswind to check Terraform drift. Read-only.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - !If
+            - HasPrincipal
+            - Effect: Allow
+              Principal:
+                AWS: !Ref TrustedPrincipalArn
+              Action: sts:AssumeRole
+              Condition: !If
+                - HasExternalId
+                - StringEquals:
+                    sts:ExternalId: !Ref ExternalId
+                - !Ref AWS::NoValue
+            - !Ref AWS::NoValue
+          - !If
+            - HasGitHub
+            - Effect: Allow
+              Principal:
+                Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+              Action: sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                # Pinned to one branch rather than `repo:owner/repo:*`. The
+                # wildcard version lets any pull request from a fork assume
+                # this role, which is how read-only roles leak state.
+                StringLike:
+                  token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepository}:ref:refs/heads/${GitHubBranch}"
+            - !Ref AWS::NoValue
+      ManagedPolicyArns:
+        - !Ref CrosswindCorePolicy
+        - !If [HasStateBucket, !Ref CrosswindStatePolicy, !Ref "AWS::NoValue"]
+        - !If [WantsRefresh, !Ref CrosswindRefreshPolicy, !Ref "AWS::NoValue"]
+
+Outputs:
+  RoleArn:
+    Description: ARN to pass to `crosswind scan --role-arn`, or to the GitHub Action.
+    Value: !GetAtt CrosswindRole.Arn
+
+  CorePolicyArn:
+    Description: CloudTrail and identity permissions.
+    Value: !Ref CrosswindCorePolicy
+
+  RefreshPolicyArn:
+    Condition: WantsRefresh
+    Description: The broad refresh permissions. Replace this with your own to narrow them.
+    Value: !Ref CrosswindRefreshPolicy

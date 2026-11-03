@@ -1,0 +1,47 @@
+# Keep the build context small and keep anything sensitive out of it. A
+# Docker build context is readable by every layer, so a stray tfplan or
+# credentials file in here would be baked into image history.
+
+.git/
+.github/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+*.egg-info/
+
+# Tests and docs are not needed to build the wheel, and excluding them means
+# a docs change does not invalidate the dependency layer.
+tests/
+docs/
+iam/
+action.yml
+examples/
+
+# Terraform working files. A plan file is a plain-text copy of state.
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.*
+
+# Reports name your resources.
+reports/
+crosswind-report-*
+*.crosswind.json
+
+# Secrets, defence in depth.
+.aws/
+*.pem
+*.key
+credentials
+.env
+.env.*

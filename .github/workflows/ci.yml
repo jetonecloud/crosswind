@@ -1,0 +1,249 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Release reuses these jobs, so a tag can't ship something that doesn't pass.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras --dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras --dev
+      - run: uv run mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Every version `requires-python` allows. A `pipx install` on 3.13
+        # shouldn't be the first time anyone runs the suite there.
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --all-extras --dev
+      # Unit tests only. The e2e suite needs a binary and gets its own job
+      # per flavour, so a Python-version failure is never confused with a
+      # Terraform-version failure.
+      - run: uv run pytest -m "not e2e" --cov --cov-report=term-missing
+
+  # The tests that matter most. If any of these fail, the central claim of
+  # the tool is not true and it should not ship.
+  safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras --dev
+      - name: Read-only guarantees
+        run: uv run pytest tests/test_safety.py tests/test_policy.py -v
+
+  e2e:
+    name: e2e (${{ matrix.flavour }} ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both tools, and an older Terraform to catch a plan-JSON format
+          # assumption that only holds on the newest one.
+          - flavour: tofu
+            version: "1.13.2"
+          - flavour: terraform
+            version: "1.9.8"
+          - flavour: terraform
+            version: "1.6.6"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        if: matrix.flavour == 'tofu'
+        with:
+          tofu_version: ${{ matrix.version }}
+
+      - uses: hashicorp/setup-terraform@v3
+        if: matrix.flavour == 'terraform'
+        with:
+          terraform_version: ${{ matrix.version }}
+          # The wrapper intercepts stdout, which breaks `show -json`.
+          terraform_wrapper: false
+
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --all-extras --dev
+
+      - name: Real drift, real binary
+        env:
+          CROSSWIND_TEST_BINARY: ${{ matrix.flavour }}
+        run: uv run pytest tests/test_e2e.py -v
+
+      - name: Record which binary actually ran
+        # Cheap insurance against the matrix silently testing the same
+        # binary three times, which a missing `if` above would cause.
+        run: ${{ matrix.flavour }} version
+
+  demo-from-a-clean-install:
+    # `crosswind demo` working from a wheel is a release criterion, and it is
+    # the first thing anyone runs. Installed from the built artifact rather
+    # than the source tree, so a missing package-data entry is caught here
+    # instead of by a user.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build --wheel
+
+      - name: Install the wheel into a clean environment
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install --quiet dist/*.whl
+          /tmp/clean/bin/crosswind version
+
+      - name: Demo works with no AWS, no Terraform, and no source tree
+        run: |
+          set -euo pipefail
+          cd /tmp
+          /tmp/clean/bin/crosswind demo
+          /tmp/clean/bin/crosswind demo --format json --output-dir /tmp/reports
+          /tmp/clean/bin/crosswind demo --format html --output-dir /tmp/reports
+          /tmp/clean/bin/crosswind demo --format markdown --output-dir /tmp/reports
+          ls -l /tmp/reports
+          python -c "import json; json.load(open('/tmp/reports/crosswind-report.json'))"
+
+      - name: The YAML data files made it into the wheel
+        # severity.yml, cloudtrail.yml and cost.yml are loaded through
+        # importlib.resources. If packaging drops them, every scan fails at
+        # the first rule lookup.
+        run: |
+          set -euo pipefail
+          /tmp/clean/bin/python - <<'PY'
+          from crosswind.core.attribution.mapping import load_mapping
+          from crosswind.core.cost import _prices
+          from crosswind.core.severity import load_rules
+
+          rules = load_rules()
+          assert len(rules.rules) > 10, rules
+          assert rules.rules[-1].id == "default"
+
+          mapping = load_mapping()
+          for required in ("aws_security_group", "aws_iam_role", "aws_s3_bucket"):
+              assert mapping.for_type(required) is not None, required
+
+          assert _prices()["hours_per_month"] == 730
+          print("data files present and loadable")
+          PY
+
+  docker:
+    # The image is published on release, so a Dockerfile that stopped
+    # building would otherwise be discovered at the worst possible moment.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: crosswind:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image
+        # It starts, it isn't root, it has a binary to drive, and the
+        # documented bind mount lands files on the host.
+        run: |
+          set -euo pipefail
+          docker run --rm crosswind:ci version
+          docker run --rm --entrypoint id crosswind:ci -un | grep -qx crosswind
+          docker run --rm --entrypoint tofu crosswind:ci version
+          mkdir -p "$RUNNER_TEMP/out"
+          chmod 777 "$RUNNER_TEMP/out"
+          docker run --rm -v "$RUNNER_TEMP/out:/out" crosswind:ci \
+            demo --format json --format html --output-dir /out
+          test -f "$RUNNER_TEMP/out/crosswind-report.json"
+          test -f "$RUNNER_TEMP/out/crosswind-report.html"
+
+      - name: The image cannot be made to write
+        # The entrypoint refuses an apply even if someone asks the container
+        # for one directly. Belt and braces over tests/test_safety.py.
+        run: |
+          set -uo pipefail
+          if docker run --rm crosswind:ci apply 2>&1 | tee /tmp/out; then
+            echo "FAIL: the container accepted 'apply'"; exit 1
+          fi
+          grep -qi "no such command\|usage" /tmp/out
+
+  action:
+    # The composite action is YAML plus a fair amount of bash, none of which
+    # is exercised by the Python tests.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: action.yml parses and its shell is valid
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import subprocess, tempfile, os, sys, yaml
+
+          failed = False
+          for name in ("action.yml", ".github/workflows/ci.yml",
+                       "examples/workflows/scheduled-drift-check.yml"):
+              with open(name) as handle:
+                  doc = yaml.safe_load(handle)
+              print(f"{name}: parsed")
+              steps = doc.get("runs", {}).get("steps", [])
+              for index, step in enumerate(steps):
+                  if "run" not in step:
+                      continue
+                  with tempfile.NamedTemporaryFile("w", suffix=".sh",
+                                                   delete=False) as fh:
+                      fh.write(step["run"])
+                      path = fh.name
+                  result = subprocess.run(["bash", "-n", path],
+                                          capture_output=True, text=True)
+                  os.unlink(path)
+                  label = step.get("name", index)
+                  if result.returncode != 0:
+                      failed = True
+                      print(f"  {label}: SYNTAX ERROR\n{result.stderr}")
+                  else:
+                      print(f"  {label}: ok")
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: The action runs end to end against a local stack
+        # Exercises the real composite action: install, scan, job summary,
+        # artifact, exit-code handling. No AWS, so no role-arn.
+        uses: ./
+        with:
+          path: examples/stacks
+          min-severity: low
+          fail-on-drift: false
+          formats: markdown,json
+          upload-artifact: false
+          binary: tofu
+        continue-on-error: true

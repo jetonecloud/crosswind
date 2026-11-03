@@ -1,0 +1,305 @@
+name: Crosswind drift check
+description: >
+  Read-only Terraform drift check. Reports what changed outside Terraform, who
+  changed it, and whether it matters. Writes a job summary and uploads the
+  reports as an artifact.
+author: Jet1
+
+branding:
+  icon: wind
+  color: blue
+
+inputs:
+  path:
+    description: Directory to scan. One stack, or a tree to search for stacks.
+    required: false
+    default: "."
+
+  role-arn:
+    description: >
+      Role to assume for CloudTrail attribution, via OIDC. Leave empty to skip
+      attribution entirely — drift detection still works, and every finding
+      will say "unknown".
+    required: false
+    default: ""
+
+  aws-region:
+    description: AWS region. Required when role-arn is set.
+    required: false
+    default: ""
+
+  min-severity:
+    description: >
+      critical, high, medium or low. Findings below this are hidden, and the
+      action exits 0 if nothing reaches it.
+    required: false
+    default: "low"
+
+  fail-on-drift:
+    description: >
+      Whether drift at or above min-severity fails the job. Set to "false" for
+      a scheduled scan that should report without going red — a drift check
+      that fails every morning is one people mute.
+
+      A stack that could not be checked always fails the job, whatever this is
+      set to. That is not drift, it is a hole in the report.
+    required: false
+    default: "true"
+
+  binary:
+    description: >
+      terraform or tofu. Whichever you set, make sure a matching setup step
+      ran first. Defaults to whichever is on PATH.
+    required: false
+    default: ""
+
+  config:
+    description: Path to a .crosswind.yml. Defaults to the nearest one found.
+    required: false
+    default: ""
+
+  var-file:
+    description: Newline-separated list of -var-file paths to pass to Terraform.
+    required: false
+    default: ""
+
+  exclude:
+    description: Newline-separated list of directories or globs to skip.
+    required: false
+    default: ""
+
+  concurrency:
+    description: How many stacks to scan at once.
+    required: false
+    default: "4"
+
+  formats:
+    description: >
+      Comma-separated output formats. markdown feeds the job summary and html
+      is what you share; both are uploaded as an artifact.
+    required: false
+    default: "markdown,html,json"
+
+  output-dir:
+    description: Where reports are written.
+    required: false
+    default: "crosswind-reports"
+
+  job-summary:
+    description: Write the Markdown report to the job summary.
+    required: false
+    default: "true"
+
+  upload-artifact:
+    description: Upload the reports as a workflow artifact.
+    required: false
+    default: "true"
+
+  artifact-name:
+    description: Artifact name. Include the matrix value if you scan several environments.
+    required: false
+    default: "crosswind-report"
+
+  artifact-retention-days:
+    description: >
+      How long to keep the artifact. A drift report names your resources, so
+      the default is short on purpose.
+    required: false
+    default: "14"
+
+  crosswind-version:
+    description: Version to install from PyPI. Pin this for a reproducible job.
+    required: false
+    default: ""
+
+  python-version:
+    description: Python used to run Crosswind.
+    required: false
+    default: "3.12"
+
+outputs:
+  exit-code:
+    description: "0 no drift at or above the threshold, 1 drift found, 2 a stack could not be checked."
+    value: ${{ steps.scan.outputs.exit-code }}
+
+  findings:
+    description: Number of findings at or above the threshold.
+    value: ${{ steps.scan.outputs.findings }}
+
+  critical:
+    description: Number of critical findings.
+    value: ${{ steps.scan.outputs.critical }}
+
+  failed-stacks:
+    description: Number of stacks that could not be checked.
+    value: ${{ steps.scan.outputs.failed-stacks }}
+
+  report-json:
+    description: Path to the JSON report, if json was among the formats.
+    value: ${{ steps.scan.outputs.report-json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Crosswind
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.crosswind-version }}" ]; then
+          python -m pip install --quiet "crosswind==${{ inputs.crosswind-version }}"
+        else
+          python -m pip install --quiet crosswind
+        fi
+        crosswind version
+
+    # OIDC. No static credentials: the role is assumed from the job's own
+    # identity token, so there is nothing in the repository to leak.
+    - name: Configure AWS credentials
+      if: inputs.role-arn != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: crosswind-drift-scan
+        # Short, because the session only needs to outlive one scan.
+        role-duration-seconds: 3600
+
+    - name: Scan for drift
+      id: scan
+      shell: bash
+      env:
+        CROSSWIND_PATH: ${{ inputs.path }}
+        CROSSWIND_MIN_SEVERITY: ${{ inputs.min-severity }}
+        CROSSWIND_FORMATS: ${{ inputs.formats }}
+        CROSSWIND_OUTPUT_DIR: ${{ inputs.output-dir }}
+        CROSSWIND_CONCURRENCY: ${{ inputs.concurrency }}
+        CROSSWIND_BINARY: ${{ inputs.binary }}
+        CROSSWIND_CONFIG: ${{ inputs.config }}
+        CROSSWIND_ROLE_ARN: ${{ inputs.role-arn }}
+        CROSSWIND_REGION: ${{ inputs.aws-region }}
+        CROSSWIND_VAR_FILES: ${{ inputs.var-file }}
+        CROSSWIND_EXCLUDES: ${{ inputs.exclude }}
+      run: |
+        # Not `set -e`: the whole point is to capture a non-zero exit code
+        # and decide what it means, rather than die on it.
+        set -uo pipefail
+
+        args=(scan
+          --path "$CROSSWIND_PATH"
+          --min-severity "$CROSSWIND_MIN_SEVERITY"
+          --output-dir "$CROSSWIND_OUTPUT_DIR"
+          --concurrency "$CROSSWIND_CONCURRENCY"
+        )
+
+        IFS=',' read -ra formats <<< "$CROSSWIND_FORMATS"
+        for fmt in "${formats[@]}"; do
+          fmt="$(echo "$fmt" | tr -d '[:space:]')"
+          [ -n "$fmt" ] && args+=(--format "$fmt")
+        done
+
+        [ -n "$CROSSWIND_BINARY" ] && args+=(--binary "$CROSSWIND_BINARY")
+        [ -n "$CROSSWIND_CONFIG" ] && args+=(--config "$CROSSWIND_CONFIG")
+
+        # Attribution only when a role was given. Without one, say so rather
+        # than letting every finding fail a credential lookup first.
+        if [ -n "$CROSSWIND_ROLE_ARN" ]; then
+          [ -n "$CROSSWIND_REGION" ] && args+=(--region "$CROSSWIND_REGION")
+        else
+          args+=(--no-attribution)
+        fi
+
+        while IFS= read -r line; do
+          line="$(echo "$line" | xargs 2>/dev/null || true)"
+          [ -n "$line" ] && args+=(--var-file "$line")
+        done <<< "$CROSSWIND_VAR_FILES"
+
+        while IFS= read -r line; do
+          line="$(echo "$line" | xargs 2>/dev/null || true)"
+          [ -n "$line" ] && args+=(--exclude "$line")
+        done <<< "$CROSSWIND_EXCLUDES"
+
+        crosswind "${args[@]}"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        # Read the counts out of the JSON when we have it, so the outputs are
+        # the report's own numbers rather than something parsed out of prose.
+        json="$CROSSWIND_OUTPUT_DIR/crosswind-report.json"
+        if [ -f "$json" ]; then
+          echo "report-json=$json" >> "$GITHUB_OUTPUT"
+          python - "$json" <<'PY' >> "$GITHUB_OUTPUT"
+        import json, sys
+        with open(sys.argv[1]) as handle:
+            summary = json.load(handle)["summary"]
+        print(f"findings={summary['findings_reported']}")
+        print(f"critical={summary['by_severity']['critical']}")
+        print(f"failed-stacks={summary['stacks_failed']}")
+        PY
+        else
+          echo "findings=0" >> "$GITHUB_OUTPUT"
+          echo "critical=0" >> "$GITHUB_OUTPUT"
+          echo "failed-stacks=0" >> "$GITHUB_OUTPUT"
+        fi
+
+        exit 0
+
+    - name: Write the job summary
+      if: inputs.job-summary == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        report="${{ inputs.output-dir }}/crosswind-report.md"
+        if [ -f "$report" ]; then
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        else
+          {
+            echo "## Crosswind"
+            echo
+            echo "No Markdown report was produced. Add \`markdown\` to \`formats\`"
+            echo "to get one here, or check the step above for an error."
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload the reports
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.output-dir }}
+        retention-days: ${{ inputs.artifact-retention-days }}
+        if-no-files-found: warn
+
+    - name: Decide whether to fail the job
+      shell: bash
+      run: |
+        set -uo pipefail
+        code="${{ steps.scan.outputs.exit-code }}"
+        failed="${{ steps.scan.outputs.failed-stacks }}"
+        findings="${{ steps.scan.outputs.findings }}"
+
+        # A stack we could not check always fails, whatever fail-on-drift
+        # says. A green check on a scan with a hole in it is the one outcome
+        # that would make this action actively misleading.
+        if [ "$code" = "2" ]; then
+          echo "::error title=Crosswind::$failed stack(s) could not be checked." \
+               "They are not known to be clean - see the job summary."
+          exit 2
+        fi
+
+        if [ "$code" = "1" ]; then
+          if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
+            echo "::error title=Crosswind::$findings drift finding(s) at or above" \
+                 "${{ inputs.min-severity }}. See the job summary."
+            exit 1
+          fi
+          echo "::warning title=Crosswind::$findings drift finding(s) at or above" \
+               "${{ inputs.min-severity }}. See the job summary."
+          exit 0
+        fi
+
+        echo "No drift at or above ${{ inputs.min-severity }}."

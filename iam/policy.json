@@ -1,0 +1,104 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CrosswindIdentity",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CrosswindAttribution",
+      "Effect": "Allow",
+      "Action": [
+        "cloudtrail:LookupEvents"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CrosswindStateRead",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning"
+      ],
+      "Resource": [
+        "arn:aws:s3:::REPLACE-WITH-YOUR-STATE-BUCKET",
+        "arn:aws:s3:::REPLACE-WITH-YOUR-STATE-BUCKET/*"
+      ]
+    },
+    {
+      "Sid": "CrosswindStateDecrypt",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": "arn:aws:kms:REGION:ACCOUNT:key/REPLACE-WITH-YOUR-STATE-KEY"
+    },
+    {
+      "Sid": "CrosswindRefreshReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "ec2:Get*",
+        "elasticloadbalancing:Describe*",
+        "autoscaling:Describe*",
+        "rds:Describe*",
+        "rds:ListTagsForResource",
+        "iam:Get*",
+        "iam:List*",
+        "s3:GetBucket*",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetReplicationConfiguration",
+        "s3:GetAccelerateConfiguration",
+        "s3:ListAllMyBuckets",
+        "lambda:Get*",
+        "lambda:List*",
+        "ecs:Describe*",
+        "ecs:List*",
+        "ecr:Describe*",
+        "ecr:GetRepositoryPolicy",
+        "ecr:ListTagsForResource",
+        "eks:Describe*",
+        "eks:List*",
+        "kms:Describe*",
+        "kms:Get*",
+        "kms:List*",
+        "route53:Get*",
+        "route53:List*",
+        "cloudfront:Get*",
+        "cloudfront:List*",
+        "logs:Describe*",
+        "logs:ListTagsForResource",
+        "sns:Get*",
+        "sns:List*",
+        "sqs:GetQueueAttributes",
+        "sqs:ListQueues",
+        "sqs:ListQueueTags",
+        "dynamodb:Describe*",
+        "dynamodb:ListTagsOfResource",
+        "elasticache:Describe*",
+        "elasticache:ListTagsForResource",
+        "efs:Describe*",
+        "apigateway:GET",
+        "cloudwatch:Describe*",
+        "cloudwatch:Get*",
+        "cloudwatch:List*",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetResourcePolicy",
+        "secretsmanager:ListSecrets",
+        "acm:Describe*",
+        "acm:List*",
+        "tag:GetResources"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

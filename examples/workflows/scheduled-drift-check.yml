@@ -1,0 +1,150 @@
+# A scheduled drift check. Copy this into .github/workflows/ and edit the
+# marked lines.
+#
+# Before it will work you need:
+#
+#   1. The role, deployed once from iam/role.cfn.yaml with your repository
+#      name in `GitHubRepository`. See iam/README.md — read the part about
+#      refresh permissions before you deploy it.
+#   2. The GitHub OIDC provider in your AWS account. The same file has the
+#      one command that creates it.
+#
+# There are no secrets to configure. The role is assumed from the job's own
+# identity token, so there is no access key anywhere in this repository.
+
+name: Drift check
+
+on:
+  schedule:
+    # 07:00 UTC on weekdays. Early enough to read before standup, and not at
+    # midnight — a report nobody looks at until Monday is a report that found
+    # a public security group on Friday evening.
+    - cron: "0 7 * * 1-5"
+
+  # So you can run it by hand after a manual change, which is exactly when
+  # you most want to.
+  workflow_dispatch:
+    inputs:
+      min-severity:
+        description: Minimum severity to report
+        required: false
+        default: low
+        type: choice
+        options: [critical, high, medium, low]
+
+# OIDC needs `id-token: write`. That is the token GitHub mints to prove which
+# workflow is running; it grants nothing in your repository.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # One scan at a time. Two concurrent refreshes of the same state are
+  # harmless — Crosswind never takes a lock — but they are a waste of
+  # CloudTrail's rate limit.
+  group: drift-check
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One environment failing should not hide the others' results.
+      fail-fast: false
+      matrix:
+        include:
+          - environment: production
+            path: infra/prod                               # <-- edit
+            role-arn: arn:aws:iam::111111111111:role/CrosswindReadOnlyRole  # <-- edit
+            region: eu-west-1                              # <-- edit
+          - environment: staging
+            path: infra/staging                            # <-- edit
+            role-arn: arn:aws:iam::222222222222:role/CrosswindReadOnlyRole  # <-- edit
+            region: eu-west-1                              # <-- edit
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Crosswind drives whichever of these is on PATH. Use the same one your
+      # team applies with: the plan JSON is identical, but the provider lock
+      # file is written by one tool and read by the other, and a mismatch
+      # shows up as a stack that could not be checked.
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.13.2
+
+      # - uses: hashicorp/setup-terraform@v3
+      #   with:
+      #     terraform_version: 1.9.8
+      #     terraform_wrapper: false   # the wrapper breaks JSON output
+
+      - name: Check for drift
+        id: crosswind
+        uses: jetonecloud/crosswind@v0
+        with:
+          path: ${{ matrix.path }}
+          role-arn: ${{ matrix.role-arn }}
+          aws-region: ${{ matrix.region }}
+          binary: tofu
+          min-severity: ${{ inputs.min-severity || 'low' }}
+          artifact-name: crosswind-${{ matrix.environment }}
+
+          # A scheduled check that goes red every morning is a check people
+          # mute, and a muted check is worse than none. Drift becomes a
+          # warning and an annotation; a stack that could not be *checked*
+          # still fails the job, because that is a hole in the report rather
+          # than a finding in it.
+          fail-on-drift: false
+
+      # Only when something is actually critical. Tune this to whatever your
+      # team will actually respond to — the aim is that a notification from
+      # this workflow is always worth reading.
+      - name: Open an issue for critical drift
+        if: steps.crosswind.outputs.critical != '0'
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+          CRITICAL: ${{ steps.crosswind.outputs.critical }}
+          FINDINGS: ${{ steps.crosswind.outputs.findings }}
+        with:
+          script: |
+            const { ENVIRONMENT, CRITICAL, FINDINGS } = process.env;
+            const title = `Critical infrastructure drift in ${ENVIRONMENT}`;
+
+            // Reuse an open issue rather than filing one a day.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "drift",
+            });
+            const match = existing.data.find((issue) => issue.title === title);
+
+            const body = [
+              `**${CRITICAL} critical** of ${FINDINGS} drift findings in \`${ENVIRONMENT}\`.`,
+              "",
+              `[Full report](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              "— the HTML report is attached to that run as an artifact.",
+              "",
+              "Crosswind is read-only and has changed nothing. Each finding says",
+              "whether to revert the change or update the code, and who CloudTrail",
+              "recorded making it.",
+            ].join("\n");
+
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["drift"],
+              });
+            }

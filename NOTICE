@@ -1,0 +1,59 @@
+Crosswind
+Copyright 2026 Jet1 (https://jetonecloud.com)
+
+This product includes software developed at Jet1.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License.
+
+-------------------------------------------------------------------------------
+
+Third-party content
+-------------------
+
+No third-party source code is vendored into this repository. Runtime
+dependencies are declared in pyproject.toml and installed from PyPI; their
+licences are their own:
+
+  typer      MIT
+  click      BSD-3-Clause
+  boto3      Apache-2.0
+  rich       MIT
+  jinja2     BSD-3-Clause
+  PyYAML     MIT
+
+The container image produced by the included Dockerfile additionally bundles
+a release binary of one of:
+
+  OpenTofu   MPL-2.0   https://github.com/opentofu/opentofu
+  Terraform  BUSL-1.1  https://github.com/hashicorp/terraform
+
+Neither is linked into or derived from Crosswind; both are invoked as external
+programs. Note that Terraform's licence, BUSL-1.1, is not an open-source
+licence and places conditions on use that are the user's to evaluate — which
+is one reason the default image ships OpenTofu.
+
+Attribution of infrastructure changes uses Amazon Web Services' CloudTrail
+API. Crosswind is not affiliated with, endorsed by, or sponsored by Amazon Web
+Services, HashiCorp, or the OpenTofu project. "Terraform" is a trademark of
+HashiCorp; "OpenTofu" is a trademark of the Linux Foundation.
+
+-------------------------------------------------------------------------------
+
+Test fixtures
+-------------
+
+The plan JSON files in tests/fixtures/plans/ were generated locally by running
+Terraform and OpenTofu against configurations using only the hashicorp/local
+and hashicorp/null providers. They describe no real infrastructure and contain
+no credentials. The secret-shaped strings in them are deliberate test
+fixtures, asserted by tests/test_redact.py never to reach any report.
