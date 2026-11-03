@@ -53,7 +53,7 @@ from crosswind.core.plan import DriftedResource, MalformedPlan, parse_plan
 from crosswind.core.redact import scrub_text
 from crosswind.core.severity import RuleSet
 from crosswind.core.terraform import Binary, Runner, TerraformError
-from crosswind.core.workspace import workspace
+from crosswind.core.workspace import install_handlers, workspace
 
 #: Exit codes. 2 beats 1: if a stack failed and drift was found, the user
 #: needs to know the report is incomplete more than they need to know there
@@ -214,6 +214,13 @@ def scan(request: ScanRequest) -> Report:
     can still raise for something that makes the whole run impossible, which
     the CLI turns into exit code 2.
     """
+    # Install the cleanup signal handlers here, on the main thread, before
+    # the pool starts. A worker thread cannot install them — `signal.signal`
+    # raises off the main thread — so leaving it to the first `workspace()`
+    # call would mean a scan with concurrency > 1 has no SIGTERM cleanup at
+    # all, which is the case plan-file cleanup exists for.
+    install_handlers()
+
     started = datetime.now(UTC)
     workers = max(1, min(request.config.concurrency, len(request.stacks) or 1))
 

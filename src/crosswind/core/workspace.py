@@ -45,8 +45,19 @@ Handler = Callable[[int, FrameType | None], Any] | int | signal.Handlers | None
 _live: set[Path] = set()
 _lock = threading.Lock()
 
-#: Set once. Signal handlers chain to whatever was installed before us rather
-#: than replacing it, so a caller embedding Crosswind keeps its own handling.
+#: Whether the `atexit` hook is registered. Safe from any thread, so this is
+#: tracked separately from the signal handlers, which are not.
+_atexit_registered = False
+
+#: Whether the signal handlers are installed. Signal handlers chain to
+#: whatever was there before rather than replacing it, so a caller embedding
+#: Crosswind keeps its own handling.
+#:
+#: **Only set once installation actually succeeded.** `signal.signal` raises
+#: `ValueError` off the main thread, and a scan creates workspaces from its
+#: worker threads — so a naive "set the flag, try to install, ignore the
+#: failure" leaves the handlers permanently uninstalled if a worker happens
+#: to get there first. That is precisely the case they exist for.
 _handlers_installed = False
 
 
@@ -59,7 +70,7 @@ def _purge() -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _install_handlers() -> None:
+def install_handlers() -> bool:
     """Make Ctrl-C and `kill` delete the plan files before the process dies.
 
     `atexit` alone is not enough: the default `SIGTERM` disposition kills the
@@ -67,28 +78,41 @@ def _install_handlers() -> None:
     and re-raise the signal so the caller's own behaviour (and the correct
     exit status) is preserved — swallowing a `SIGTERM` to be tidy is its own
     kind of rude.
-    """
-    global _handlers_installed
-    if _handlers_installed:
-        return
-    _handlers_installed = True
 
-    atexit.register(_purge)
+    Returns whether the signal handlers are now installed. Callers that know
+    they are on the main thread — `scan()`, before it starts its pool —
+    should call this early, because a worker thread cannot do it.
+    """
+    global _atexit_registered, _handlers_installed
+
+    with _lock:
+        if not _atexit_registered:
+            atexit.register(_purge)
+            _atexit_registered = True
+        if _handlers_installed:
+            return True
+
+    previous: dict[int, Handler] = {}
 
     def handler(signum: int, frame: FrameType | None) -> None:
         _purge()
         signal.signal(signum, previous.get(signum, signal.SIG_DFL))
         signal.raise_signal(signum)
 
-    previous: dict[int, Handler] = {}
     for signum in (signal.SIGINT, signal.SIGTERM):
         try:
             previous[signum] = signal.getsignal(signum)
             signal.signal(signum, handler)
         except (ValueError, OSError):
-            # Not the main thread, or a platform without this signal. The
-            # `atexit` hook and the `finally` still apply.
-            pass
+            # Not the main thread, or a platform without this signal. Leave
+            # the flag clear so a later main-thread call still installs them.
+            # The `atexit` hook and the context manager's `finally` apply
+            # either way.
+            return False
+
+    with _lock:
+        _handlers_installed = True
+    return True
 
 
 def harden(path: Path) -> None:
@@ -133,7 +157,7 @@ def workspace(prefix: str = "crosswind-") -> Iterator[Workspace]:
     `mkdtemp` is `0700` by default and creates atomically, so there is no
     window in which the directory exists with a wider mode.
     """
-    _install_handlers()
+    install_handlers()
     root = Path(tempfile.mkdtemp(prefix=prefix))
     with _lock:
         _live.add(root)

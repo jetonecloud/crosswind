@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
+import threading
 from pathlib import Path
 
 from crosswind.core import workspace as ws
@@ -74,6 +76,57 @@ def test_purge_removes_a_leaked_directory() -> None:
     ws._purge()
     assert not space_root.exists()
     assert space_root not in ws._live
+
+
+def test_a_worker_thread_does_not_block_handler_installation_later() -> None:
+    """The bug this guards against cost a scan its SIGTERM cleanup entirely.
+
+    `signal.signal` raises off the main thread, and a scan creates its
+    workspaces from worker threads. Marking the handlers "installed" before
+    trying meant that if a worker got there first, they were never installed
+    at all — on the exact code path they exist for.
+    """
+    ws._handlers_installed = False
+    failures: list[bool] = []
+
+    def in_thread() -> None:
+        # A worker cannot install them, and must report that honestly.
+        failures.append(ws.install_handlers())
+
+    thread = threading.Thread(target=in_thread)
+    thread.start()
+    thread.join()
+
+    assert failures == [False]
+    assert ws._handlers_installed is False, "a failed attempt must not set the flag"
+    # The main thread can still install them afterwards.
+    assert ws.install_handlers() is True
+    assert ws._handlers_installed is True
+
+
+def test_install_handlers_is_idempotent() -> None:
+    assert ws.install_handlers() is True
+    assert ws.install_handlers() is True
+
+
+def test_installed_handlers_chain_to_what_was_there_before() -> None:
+    """Swallowing someone else's SIGTERM handling would be rude."""
+    ws._handlers_installed = False
+    sentinel_called: list[int] = []
+
+    def sentinel(signum: int, frame: object) -> None:  # pragma: no cover
+        sentinel_called.append(signum)
+
+    previous = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, sentinel)
+    try:
+        assert ws.install_handlers() is True
+        # Ours is in place now, not the sentinel.
+        assert signal.getsignal(signal.SIGTERM) is not sentinel
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+        ws._handlers_installed = False
+        ws.install_handlers()
 
 
 def test_plan_path_is_inside_the_workspace_and_filename_safe() -> None:

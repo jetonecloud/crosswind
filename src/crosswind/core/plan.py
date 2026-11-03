@@ -152,6 +152,18 @@ def parse_plan(payload: dict[str, Any]) -> PlanSummary:
             f"guess at the structure, so it is refusing instead."
         )
 
+    # Required, even though we only use it for the report header. Real
+    # `show -json` output always carries it, so its absence means we are not
+    # looking at what we think we are looking at — and the cost of being
+    # wrong here is a malformed plan reading as a clean stack, since both
+    # lack a `resource_drift` key.
+    raw_tf_version = payload.get("terraform_version")
+    if not isinstance(raw_tf_version, str) or not raw_tf_version:
+        raise MalformedPlan(
+            "Plan JSON has no `terraform_version`. This does not look like the "
+            "output of `terraform show -json`."
+        )
+
     entries = payload.get("resource_drift", [])
     if not isinstance(entries, list):
         raise MalformedPlan("`resource_drift` is present but is not a list.")
@@ -159,7 +171,7 @@ def parse_plan(payload: dict[str, Any]) -> PlanSummary:
     drift = tuple(_parse_entry(entry) for entry in entries if _is_managed(entry))
     return PlanSummary(
         format_version=raw_version,
-        terraform_version=str(payload.get("terraform_version") or "unknown"),
+        terraform_version=raw_tf_version,
         drift=drift,
         errored=bool(payload.get("errored")),
     )
