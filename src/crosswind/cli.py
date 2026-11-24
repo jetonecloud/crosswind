@@ -1,4 +1,4 @@
-"""The command line: `demo`, `scan`, `doctor`, `version`.
+"""The command line: `demo`, `scan`, `compare`, `doctor`, `version`.
 
 This module owns all the I/O. Everything under `core/` returns values; the
 CLI is the only place that prints, writes a file, or chooses an exit code.
@@ -20,7 +20,7 @@ situation from a report with findings in it, and the more urgent one.
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -28,6 +28,7 @@ import click
 import typer
 
 from crosswind import __version__
+from crosswind.core import compare as compare_module
 from crosswind.core import config as config_module
 from crosswind.core import discover as discover_module
 from crosswind.core import ignore as ignore_module
@@ -37,6 +38,7 @@ from crosswind.core.attribution.mapping import load_mapping
 from crosswind.core.config import ConfigError
 from crosswind.core.findings import Severity
 from crosswind.core.report import EXTENSIONS, FORMATS, render
+from crosswind.core.report.compare import COMPARE_FORMATS, COMPARE_RENDERERS
 from crosswind.core.scan import EXIT_ERROR, Report, ScanRequest
 from crosswind.core.scan import scan as run_scan
 from crosswind.core.severity import RuleError, load_rules
@@ -64,6 +66,7 @@ app = typer.Typer(
 #: scheduled scan a directory nobody prunes; a stable name overwrites, which
 #: is what a CI artifact wants.
 REPORT_STEM = "crosswind-report"
+COMPARE_STEM = "crosswind-compare"
 
 
 def _err(message: str) -> None:
@@ -113,7 +116,7 @@ def demo(
 
     chosen = _validate_formats(formats or ["terminal"])
     report = demo_report(min_severity=threshold)
-    _emit(report, chosen, output_dir)
+    _emit_report(report, chosen, output_dir)
 
     _err("")
     _err("This was a sample report. To scan your own stacks:")
@@ -424,18 +427,84 @@ def scan(
         _err("crosswind: interrupted. Temporary plan files were deleted.")
         raise typer.Exit(EXIT_ERROR) from None
 
-    _emit(report, chosen, settings.output_dir)
+    _emit_report(report, chosen, settings.output_dir)
     raise typer.Exit(report.exit_code)
 
 
-def _validate_formats(requested: Sequence[str]) -> list[str]:
+@app.command()
+def compare(
+    before: Annotated[
+        Path,
+        typer.Argument(
+            metavar="BEFORE.json",
+            help="The earlier `scan --format json` report.",
+            show_default=False,
+        ),
+    ],
+    after: Annotated[
+        Path,
+        typer.Argument(metavar="AFTER.json", help="The later report.", show_default=False),
+    ],
+    formats: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--format",
+            "-f",
+            help=f"Output format, repeatable. One of: {', '.join(COMPARE_FORMATS)}.",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", "-o", help="Where to write file formats."),
+    ] = None,
+    min_severity: Annotated[
+        str | None,
+        typer.Option(
+            "--min-severity",
+            help="Exit 1 only for new or worsened findings at or above this.",
+        ),
+    ] = None,
+) -> None:
+    """Compare two scan reports: what is new, worse, resolved, or unverified.
+
+    Reads two files written by `crosswind scan --format json`, earlier first.
+    A finding missing from the later report is only called resolved if its
+    stack was checked again; otherwise it is "not verified", with the reason.
+    Exit 0 if nothing is new or worse, 1 if something is, 2 if the later
+    report has stacks it could not check or a file could not be read.
+    """
+    try:
+        threshold = Severity.parse(min_severity) if min_severity else Severity.LOW
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--min-severity") from exc
+
+    chosen = _validate_formats(formats or ["terminal"], available=COMPARE_FORMATS)
+
+    try:
+        earlier = compare_module.load_report(before)
+        later = compare_module.load_report(after)
+    except compare_module.CompareError as exc:
+        _err(f"crosswind: {exc}")
+        raise typer.Exit(EXIT_ERROR) from exc
+
+    result = compare_module.compare(earlier, later, fail_threshold=threshold)
+    _emit(
+        chosen,
+        output_dir,
+        lambda fmt: COMPARE_RENDERERS[fmt](result),
+        stem=COMPARE_STEM,
+    )
+    raise typer.Exit(result.exit_code)
+
+
+def _validate_formats(requested: Sequence[str], available: Sequence[str] = FORMATS) -> list[str]:
     """Deduplicate and check `--format`, keeping the order asked for."""
     seen: list[str] = []
     for fmt in requested:
         cleaned = fmt.strip().lower()
-        if cleaned not in FORMATS:
+        if cleaned not in available:
             raise typer.BadParameter(
-                f"{fmt!r} is not a format. Available: {', '.join(FORMATS)}.",
+                f"{fmt!r} is not a format. Available: {', '.join(available)}.",
                 param_hint="--format",
             )
         if cleaned not in seen:
@@ -443,7 +512,17 @@ def _validate_formats(requested: Sequence[str]) -> list[str]:
     return seen
 
 
-def _emit(report: Report, formats: list[str], output_dir: Path | None) -> None:
+def _emit_report(report: Report, formats: list[str], output_dir: Path | None) -> None:
+    _emit(formats, output_dir, lambda fmt: render(report, fmt), stem=REPORT_STEM)
+
+
+def _emit(
+    formats: list[str],
+    output_dir: Path | None,
+    render_one: Callable[[str], str],
+    *,
+    stem: str,
+) -> None:
     """Print the terminal report and write the file formats.
 
     The terminal format always goes to stdout; the others go to files unless
@@ -455,11 +534,11 @@ def _emit(report: Report, formats: list[str], output_dir: Path | None) -> None:
     to_file = [fmt for fmt in formats if fmt != "terminal"]
 
     if len(formats) == 1 and to_file and output_dir is None:
-        click.echo(render(report, to_file[0]), nl=False)
+        click.echo(render_one(to_file[0]), nl=False)
         return
 
     for fmt in to_stdout:
-        click.echo(render(report, fmt), nl=False)
+        click.echo(render_one(fmt), nl=False)
 
     if not to_file:
         return
@@ -472,9 +551,9 @@ def _emit(report: Report, formats: list[str], output_dir: Path | None) -> None:
         raise typer.Exit(EXIT_ERROR) from exc
 
     for fmt in to_file:
-        destination = target / f"{REPORT_STEM}{EXTENSIONS[fmt]}"
+        destination = target / f"{stem}{EXTENSIONS[fmt]}"
         try:
-            destination.write_text(render(report, fmt), encoding="utf-8")
+            destination.write_text(render_one(fmt), encoding="utf-8")
         except OSError as exc:
             _err(f"crosswind: could not write {destination}: {exc}")
             raise typer.Exit(EXIT_ERROR) from exc

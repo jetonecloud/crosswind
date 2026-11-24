@@ -513,3 +513,119 @@ def test_doctor_warns_when_there_are_no_stacks(
 
 def test_stack_statuses_are_the_three_documented_ones() -> None:
     assert {status.value for status in StackStatus} == {"clean", "drifted", "failed"}
+
+
+# --- compare --------------------------------------------------------------
+
+
+def _scan_report(
+    findings: list[dict[str, Any]], *, status: str = "drifted", when: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "tool": "crosswind",
+        "generated_at": when,
+        "min_severity": "low",
+        "account": None,
+        "summary": {},
+        "stacks": [{"path": "infra/prod", "status": status, "ignored": 0}],
+        "findings": findings,
+    }
+
+
+def _finding(address: str, severity: str = "critical") -> dict[str, Any]:
+    return {
+        "id": f"infra/prod::{address}",
+        "stack": "infra/prod",
+        "address": address,
+        "severity": severity,
+        "drift_kind": "changed",
+        "changes": [{"path": "x", "before": 1, "after": 2}],
+    }
+
+
+def _write_pair(tmp_path: Path, before: dict[str, Any], after: dict[str, Any]) -> tuple[str, str]:
+    first, second = tmp_path / "before.json", tmp_path / "after.json"
+    first.write_text(json.dumps(before), encoding="utf-8")
+    second.write_text(json.dumps(after), encoding="utf-8")
+    return str(first), str(second)
+
+
+def test_compare_exits_0_when_nothing_is_new(tmp_path: Path) -> None:
+    same = _scan_report([_finding("aws_s3_bucket.a")], when="2026-11-03T09:00:00+00:00")
+    result = invoke("compare", *_write_pair(tmp_path, same, same))
+    assert result.exit_code == EXIT_CLEAN, result.output
+    assert "STILL THERE (1)" in result.stdout
+
+
+def test_compare_exits_1_on_new_drift(tmp_path: Path) -> None:
+    before = _scan_report([], when="2026-11-03T09:00:00+00:00")
+    after = _scan_report([_finding("aws_s3_bucket.a")], when="2026-11-04T09:00:00+00:00")
+    result = invoke("compare", *_write_pair(tmp_path, before, after))
+    assert result.exit_code == EXIT_DRIFT
+    assert "NEW (1)" in result.stdout
+
+
+def test_compare_min_severity_lets_minor_drift_through(tmp_path: Path) -> None:
+    before = _scan_report([], when="2026-11-03T09:00:00+00:00")
+    after = _scan_report([_finding("aws_s3_bucket.a", "low")], when="2026-11-04T09:00:00+00:00")
+    result = invoke("compare", *_write_pair(tmp_path, before, after), "--min-severity", "high")
+    assert result.exit_code == EXIT_CLEAN
+
+
+def test_compare_exits_2_when_the_later_run_has_a_hole(tmp_path: Path) -> None:
+    before = _scan_report([_finding("aws_s3_bucket.a")], when="2026-11-03T09:00:00+00:00")
+    after = _scan_report([], status="failed", when="2026-11-04T09:00:00+00:00")
+    result = invoke("compare", *_write_pair(tmp_path, before, after), "-f", "json")
+    assert result.exit_code == EXIT_ERROR
+    data = json.loads(result.stdout)
+    assert data["summary"]["resolved"] == 0
+    assert data["entries"][0]["reason"] == "stack_failed"
+
+
+def test_compare_rejects_a_file_that_is_not_a_report(tmp_path: Path) -> None:
+    before = _scan_report([], when="2026-11-03T09:00:00+00:00")
+    first, second = _write_pair(tmp_path, before, before)
+    Path(second).write_text('{"format_version": "1.2"}', encoding="utf-8")
+    result = invoke("compare", first, second)
+    assert result.exit_code == EXIT_ERROR
+    assert "is not a Crosswind report" in result.stderr
+    assert result.stdout == ""
+
+
+def test_compare_refuses_the_html_format(tmp_path: Path) -> None:
+    same = _scan_report([], when="2026-11-03T09:00:00+00:00")
+    result = invoke("compare", *_write_pair(tmp_path, same, same), "-f", "html")
+    assert result.exit_code != 0
+    assert "not a format" in result.output
+
+
+def test_compare_writes_files_with_their_own_name(tmp_path: Path) -> None:
+    same = _scan_report([], when="2026-11-03T09:00:00+00:00")
+    out = tmp_path / "out"
+    result = invoke(
+        "compare",
+        *_write_pair(tmp_path, same, same),
+        "-f",
+        "markdown",
+        "-f",
+        "json",
+        "-o",
+        str(out),
+    )
+    assert result.exit_code == EXIT_CLEAN, result.output
+    assert sorted(p.name for p in out.iterdir()) == [
+        "crosswind-compare.json",
+        "crosswind-compare.md",
+    ]
+    assert not (out / "crosswind-report.json").exists()
+
+
+def test_compare_reads_what_demo_writes(tmp_path: Path) -> None:
+    written = invoke("demo", "-f", "json")
+    path = tmp_path / "demo.json"
+    path.write_text(written.stdout, encoding="utf-8")
+    result = invoke("compare", str(path), str(path))
+    # The demo fixture has a stack that could not be checked.
+    assert result.exit_code == EXIT_ERROR
+    assert "COULD NOT CHECK" in result.stdout
