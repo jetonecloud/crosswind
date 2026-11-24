@@ -207,6 +207,52 @@ If you do this on PRs, use `peter-evans/create-or-update-comment` with an
 `edit-mode: replace` and a marker rather than posting a new comment each
 push, or a long-running PR accumulates twenty drift reports.
 
+### Only what changed since the last scheduled run
+
+A daily scan of an estate with known, accepted drift is a report of the same
+twenty findings every morning. Compare against the previous run's artifact
+and the job summary shows what moved instead:
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+  actions: read   # to download the previous run's artifact
+
+steps:
+  - uses: actions/checkout@v4
+
+  - name: Previous report
+    env:
+      GH_TOKEN: ${{ github.token }}
+    run: |
+      prev=$(gh run list --workflow "${{ github.workflow }}" --branch main \
+        --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+      if [ -n "$prev" ]; then
+        gh run download "$prev" --name crosswind-report --dir previous || true
+      fi
+
+  - uses: jetonecloud/crosswind@v0
+    id: scan
+    with:
+      path: infra/prod
+      role-arn: ${{ vars.CROSSWIND_ROLE_ARN }}
+      aws-region: eu-west-1
+      fail-on-drift: false
+
+  - name: What changed
+    if: always() && hashFiles('previous/crosswind-report.json') != ''
+    run: |
+      crosswind compare previous/crosswind-report.json \
+        "${{ steps.scan.outputs.report-json }}" \
+        --format markdown --min-severity high >> "$GITHUB_STEP_SUMMARY"
+```
+
+`compare` exits 1 when something new or worse appears at or above
+`--min-severity`, so this step goes red for a new critical finding and stays
+green for the twenty that were there yesterday. A finding that vanished
+because its stack failed is listed as "not verified", never as resolved.
+
 ### Several environments
 
 ```yaml

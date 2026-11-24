@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- **`crosswind compare BEFORE.json AFTER.json`** lines up two scan reports and sorts every finding into new, changed, still there, resolved, or **not verified**. A finding missing from the later report is only called resolved if its stack was checked again and came back without it. If the stack failed, was not scanned, ran with a higher `--min-severity`, or had more findings suppressed by `.crosswindignore`, it is "not verified" with a reason code (`stack_failed`, `stack_not_scanned`, `below_threshold`, `may_be_ignored`), because none of those is a fix.
+  - Changed findings say what moved: severity, drift kind, attributes that now differ or no longer do, and values that changed. A severity increase is flagged as worsened. Attribution is not compared, since CloudTrail finding an event this time says nothing about the drift.
+  - Exit 0 if nothing is new or worse, 1 if something is at or above `--min-severity`, 2 if the later report has a stack it could not check or either file is unreadable. 2 beats 1, as in `scan`.
+  - Terminal, Markdown (capped under GitHub's job-summary limit, good news collapsed) and JSON output. The JSON is versioned on its own (`"kind": "comparison"`, `schema_version: 1.0`) and documented in [`docs/json-schema.md`](docs/json-schema.md#comparing-two-runs).
+  - Notes when the arguments look swapped, when the reports come from different AWS accounts, and when the later run used a lower threshold so findings may look new only because the earlier run hid them.
+  - [`docs/github-actions.md`](docs/github-actions.md) has a scheduled workflow that compares against the previous run's artifact, so the job summary shows what moved rather than the same accepted drift every morning.
+
 ## [0.1.0] - 2026-11-03
 
 The first release. Detects drift in the resources Terraform already manages, attributes it to a CloudTrail event where the evidence supports one, scores it against a rule set you can read, and recommends reverting or updating the code. It never does either.

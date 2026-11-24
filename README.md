@@ -113,6 +113,30 @@ COULD NOT CHECK 1 STACK
 `crosswind demo` prints that whole report, including the HTML, from bundled
 fixtures.
 
+## What changed since last time
+
+A scheduled scan tells you there is drift. By Friday the question is what
+changed since Monday:
+
+```sh
+crosswind scan --path . --format json > friday.json
+crosswind compare monday.json friday.json
+```
+
+Every finding lands in one of five groups: **new**, **changed** (with what
+moved, and whether its severity went up), **still there**, **resolved**, and
+**not verified**. That last one is the reason this is a command rather than
+a `jq` one-liner. A finding missing from the later report is only called
+resolved if its stack was checked again and came back without it. If the
+stack failed, wasn't scanned, ran with a higher `--min-severity`, or had more
+findings suppressed by `.crosswindignore`, the finding is "not verified" and
+the report says which of those applies.
+
+`compare` exits 0 if nothing is new or worse, 1 if something is (at or above
+`--min-severity`), and 2 if the later report has a stack it could not check.
+`--format terminal`, `markdown` and `json` all work; the JSON is documented
+in [`docs/json-schema.md`](docs/json-schema.md#comparing-two-runs).
+
 ## Exit codes
 
 | Code | Meaning |

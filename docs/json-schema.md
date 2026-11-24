@@ -272,30 +272,81 @@ a calculator, and always says the number is an upper bound. If you render
 `monthly_usd`, render `basis` with it — a number without its arithmetic is a
 number nobody can check.
 
-## Diffing two runs
+## Comparing two runs
 
-`id` is stable, so:
+`id` is stable across runs, so two reports can be lined up. Use
+`crosswind compare` rather than diffing the `id` sets yourself: a naive diff
+calls a finding "fixed" when its stack simply failed in the later run, and
+that is the one mistake a drift report must not make.
 
-```python
-import json
-
-
-def load(path):
-    with open(path) as handle:
-        report = json.load(handle)
-    return {item["id"]: item for item in report["findings"]}
-
-
-before, after = load("monday.json"), load("friday.json")
-
-print("fixed:    ", sorted(before.keys() - after.keys()))
-print("new:      ", sorted(after.keys() - before.keys()))
-print("remaining:", sorted(before.keys() & after.keys()))
+```sh
+crosswind compare monday.json friday.json --format json
 ```
 
-Before trusting "fixed", check `summary.stacks_failed` in the later run. A
-finding that disappears because its stack stopped being scannable has not
-been fixed.
+`compare` reads any `1.x` report and refuses anything else, including a file
+that is not a Crosswind report at all. Its own output is versioned separately
+(`schema_version: 1.0`) and marked `"kind": "comparison"`:
+
+```json
+{
+  "schema_version": "1.0",
+  "tool": "crosswind",
+  "kind": "comparison",
+  "before": { "source": "monday.json", "generated_at": "...", "account": "...",
+              "min_severity": "low", "schema_version": "1.0",
+              "stacks_scanned": 5, "stacks_failed": 1 },
+  "after":  { },
+  "fail_threshold": "low",
+  "summary": {
+    "new": 1, "changed": 2, "worsened": 1, "persisting": 4,
+    "resolved": 1, "unverified": 1,
+    "stacks_failed": 0, "stacks_recovered": 1,
+    "stacks_missing": 0, "stacks_added": 0,
+    "exit_code": 1
+  },
+  "notes": [],
+  "stacks": { "failed": [], "recovered": ["infra/legacy/billing"],
+              "missing": [], "added": [] },
+  "entries": [ ]
+}
+```
+
+Each entry:
+
+| Key | Type | Notes |
+|---|---|---|
+| `id` | string | The finding `id`, as in both reports. |
+| `delta` | string | `new`, `changed`, `persisting`, `resolved` or `unverified`. |
+| `stack`, `address` | string | From the most recent copy of the finding. |
+| `severity` | string | Most recent severity. |
+| `severity_before` | string \| null | `null` for `new`. |
+| `worsened` | bool | `changed` and the severity went up. |
+| `reason` | string \| null | Set for `unverified` only. See below. |
+| `differences` | string[] | For `changed`: short sentences saying what moved. |
+| `before`, `after` | object \| null | The finding exactly as each report recorded it. |
+
+Attribution is deliberately not compared. A later run finding a CloudTrail
+event the earlier one missed, or losing one to the 90-day window, does not
+mean the drift moved.
+
+### Why a finding is `unverified`
+
+| `reason` | Meaning |
+|---|---|
+| `stack_failed` | Its stack could not be checked in the later run. |
+| `stack_not_scanned` | Its stack is not in the later report at all. |
+| `below_threshold` | The later run's `min_severity` would have hidden it. |
+| `may_be_ignored` | The later run suppressed more findings in that stack, so an ignore rule may be hiding it. |
+
+None of those is a fix, so none of them is reported as `resolved`.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Nothing new or worse at or above `--min-severity` |
+| 1 | A new or worsened finding at or above `--min-severity` |
+| 2 | The later report has a stack it could not check, or a file could not be read |
 
 ## Exit codes
 
